@@ -52,16 +52,21 @@ export default function App() {
   });
 
   const [history, setHistory] = useState<any[]>([]);
+  const [graphData, setGraphData] = useState<any[]>([]);
+  const [graphTimeframe, setGraphTimeframe] = useState('24h');
   const [schedules, setSchedules] = useState<any[]>([]);
   const [insights, setInsights] = useState<any[]>([]);
   const [reasoning, setReasoning] = useState<any[]>([]);
   const [entities, setEntities] = useState<any[]>([]);
   const [trackedEntities, setTrackedEntities] = useState<Record<string, { tracked: boolean, notes: string }>>({});
-  const [isSyncing, setIsSyncing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [haStatus, setHaStatus] = useState('disconnected');
   const [usersList, setUsersList] = useState<any[]>([]);
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'viewer' });
+  const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, message: '', updating: false });
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState('all');
+  const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
 
   useEffect(() => {
     if (currentUser) {
@@ -84,6 +89,10 @@ export default function App() {
         const message = JSON.parse(event.data);
         if (message.type === 'NEW_HISTORY') {
           setHistory(prev => [message.data, ...prev].slice(0, 100));
+          // If the new history event is for a graphed zone, refresh the graph data
+          if (settings.dashboard_graph_zones && settings.dashboard_graph_zones.includes(message.data.entity_id)) {
+            fetchGraphData(settings.dashboard_graph_zones);
+          }
         } else if (message.type === 'NEW_REASONING') {
           fetchReasoning();
           fetchSchedules();
@@ -94,7 +103,23 @@ export default function App() {
       
       return () => ws.close();
     }
-  }, [currentUser]);
+  }, [currentUser, settings.dashboard_graph_zones]);
+
+  useEffect(() => {
+    if (settings.dashboard_graph_zones) {
+      fetchGraphData(settings.dashboard_graph_zones, graphTimeframe);
+    }
+  }, [settings.dashboard_graph_zones, graphTimeframe]);
+
+  const fetchGraphData = async (zonesStr: string, timeframe: string) => {
+    try {
+      const res = await fetch(`/api/history/graph?zones=${encodeURIComponent(zonesStr)}&timeframe=${timeframe}`);
+      const data = await res.json();
+      setGraphData(data);
+    } catch (e) {
+      console.error("Failed to fetch graph data", e);
+    }
+  };
 
   const fetchHaStatus = async () => {
     const res = await fetch('/api/ha/status');
@@ -223,6 +248,16 @@ export default function App() {
     alert('Settings saved');
   };
 
+  const handleUpdateSingleSetting = async (key: string, value: string) => {
+    const newSettings = { ...settings, [key]: value };
+    setSettings(newSettings);
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSettings)
+    });
+  };
+
   const handleSaveClimateSettings = async () => {
     await fetch('/api/settings', {
       method: 'POST',
@@ -254,13 +289,6 @@ export default function App() {
     });
   };
 
-  const handleSyncHA = async () => {
-    setIsSyncing(true);
-    await fetch('/api/ha/sync', { method: 'POST' });
-    // History updates automatically via WebSocket now
-    setIsSyncing(false);
-  };
-
   const handleGenerateSchedule = async () => {
     setIsGenerating(true);
     try {
@@ -285,8 +313,50 @@ export default function App() {
     } else {
       newZones = [...currentZones, entity_id];
     }
-    setSettings(prev => ({ ...prev, dashboard_graph_zones: JSON.stringify(newZones) }));
+    handleUpdateSingleSetting('dashboard_graph_zones', JSON.stringify(newZones));
   };
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus(prev => ({ ...prev, checking: true, message: '' }));
+    try {
+      const res = await fetch('/api/system/check-update');
+      const data = await res.json();
+      setUpdateStatus(prev => ({ ...prev, checking: false, available: data.updateAvailable, message: data.message }));
+    } catch (e) {
+      setUpdateStatus(prev => ({ ...prev, checking: false, message: 'Failed to check for updates.' }));
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    setUpdateStatus(prev => ({ ...prev, updating: true }));
+    try {
+      const res = await fetch('/api/system/update', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setUpdateStatus(prev => ({ ...prev, updating: false, available: false, message: data.message }));
+      } else {
+        setUpdateStatus(prev => ({ ...prev, updating: false, message: 'Update failed: ' + data.error }));
+      }
+    } catch (e) {
+      setUpdateStatus(prev => ({ ...prev, updating: false, message: 'Failed to apply update.' }));
+    }
+  };
+
+  const filteredEntities = entities.filter(entity => {
+    const matchesSearch = (entity.friendly_name || '').toLowerCase().includes(deviceSearch.toLowerCase()) || 
+                          (entity.entity_id || '').toLowerCase().includes(deviceSearch.toLowerCase());
+    
+    const matchesType = deviceTypeFilter === 'all' || entity.domain === deviceTypeFilter;
+    
+    const isTracked = trackedEntities[entity.entity_id]?.tracked || false;
+    const matchesStatus = deviceStatusFilter === 'all' || 
+                          (deviceStatusFilter === 'tracked' && isTracked) || 
+                          (deviceStatusFilter === 'untracked' && !isTracked);
+                          
+    return matchesSearch && matchesType && matchesStatus;
+  });
+
+  const uniqueDomains = Array.from(new Set(entities.map(e => e.domain))).sort();
 
   if (!currentUser) {
     return (
@@ -334,14 +404,21 @@ export default function App() {
   const graphZones = JSON.parse(settings.dashboard_graph_zones || '[]');
   const chartDataMap: Record<string, any> = {};
   
-  // Group by hour for simplicity in this demo
-  history.forEach(item => {
+  graphData.forEach(item => {
     if (graphZones.includes(item.entity_id)) {
-      const date = new Date(item.last_changed);
-      const timeKey = `${date.getHours().toString().padStart(2, '0')}:00`;
+      const date = new Date(item.last_changed + 'Z');
+      
+      let timeKey = '';
+      if (graphTimeframe === '24h') {
+        timeKey = `${date.getHours().toString().padStart(2, '0')}:00`;
+      } else if (graphTimeframe === '7d' || graphTimeframe === '30d') {
+        timeKey = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:00`;
+      } else {
+        timeKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
+      }
       
       if (!chartDataMap[timeKey]) {
-        chartDataMap[timeKey] = { time: timeKey };
+        chartDataMap[timeKey] = { time: timeKey, timestamp: date.getTime() };
       }
       
       try {
@@ -353,7 +430,7 @@ export default function App() {
     }
   });
   
-  const chartData = Object.values(chartDataMap).sort((a: any, b: any) => a.time.localeCompare(b.time));
+  const chartData = Object.values(chartDataMap).sort((a: any, b: any) => a.timestamp - b.timestamp);
   if (chartData.length === 0) {
     // Fallback mock data if no real history for zones
     chartData.push(
@@ -425,12 +502,6 @@ export default function App() {
               {haStatus === 'connected' ? <Wifi className="w-3.5 h-3.5 mr-1.5" /> : <WifiOff className="w-3.5 h-3.5 mr-1.5" />}
               {haStatus === 'connected' ? 'HA Connected' : haStatus === 'connecting' ? 'Connecting...' : 'HA Disconnected'}
             </div>
-            {currentUser.role === 'admin' && (
-              <Button variant="outline" size="sm" onClick={handleSyncHA} disabled={isSyncing} className="rounded-full">
-                <RefreshCw className={`w-4 h-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
-                Simulate Event
-              </Button>
-            )}
           </div>
         </header>
 
@@ -475,9 +546,21 @@ export default function App() {
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card className="col-span-1 lg:col-span-2">
-                  <CardHeader>
-                    <CardTitle>Zone Temperatures (24h)</CardTitle>
-                    <CardDescription>Historical temperature data for tracked zones</CardDescription>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <div>
+                      <CardTitle>Zone Temperatures</CardTitle>
+                      <CardDescription>Historical temperature data for tracked zones</CardDescription>
+                    </div>
+                    <select 
+                      className="h-8 px-2 py-1 border border-slate-200 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+                      value={graphTimeframe}
+                      onChange={(e) => setGraphTimeframe(e.target.value)}
+                    >
+                      <option value="24h">Last 24 Hours</option>
+                      <option value="7d">Last 7 Days</option>
+                      <option value="30d">Last 30 Days</option>
+                      <option value="all">All Time</option>
+                    </select>
                   </CardHeader>
                   <CardContent className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
@@ -653,7 +736,7 @@ export default function App() {
                     <tbody>
                       {history.map((item: any) => (
                         <tr key={item.id} className="border-b border-slate-100">
-                          <td className="px-6 py-4">{new Date(item.last_changed).toLocaleString()}</td>
+                          <td className="px-6 py-4">{new Date(item.last_changed + 'Z').toLocaleString()}</td>
                           <td className="px-6 py-4 font-medium">{item.entity_id}</td>
                           <td className="px-6 py-4">
                             <span className="px-2 py-1 bg-slate-100 rounded-md text-slate-700">
@@ -688,7 +771,7 @@ export default function App() {
                   <Card key={schedule.id}>
                     <CardHeader>
                       <CardTitle>{schedule.name}</CardTitle>
-                      <CardDescription>{new Date(schedule.created_at).toLocaleDateString()}</CardDescription>
+                      <CardDescription>{new Date(schedule.created_at + 'Z').toLocaleString()}</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm text-slate-600 mb-4">{schedule.description}</p>
@@ -725,7 +808,7 @@ export default function App() {
                           <CardDescription className="text-indigo-600 font-medium mb-1">{r.context}</CardDescription>
                           <CardTitle className="text-lg">{r.decision}</CardTitle>
                         </div>
-                        <span className="text-xs text-slate-400">{new Date(r.created_at).toLocaleString()}</span>
+                        <span className="text-xs text-slate-400">{new Date(r.created_at + 'Z').toLocaleString()}</span>
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -778,6 +861,46 @@ export default function App() {
                           <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
                         </div>
                       </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>AI Ghost Mode</CardTitle>
+                      <CardDescription>When Ghost Mode is enabled, the AI will generate schedules and reasoning but will NOT send commands to Home Assistant.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
+                        <div>
+                          <h4 className="font-medium text-slate-900">HVAC Ghost Mode</h4>
+                          <p className="text-sm text-slate-500">Prevent AI from changing thermostat set points.</p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={settings.ghost_mode_hvac === 'true' || settings.ghost_mode_hvac === undefined}
+                            onChange={(e) => handleUpdateSingleSetting('ghost_mode_hvac', e.target.checked ? 'true' : 'false')}
+                          />
+                          <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
+                        <div>
+                          <h4 className="font-medium text-slate-900">Whole Home AI Ghost Mode</h4>
+                          <p className="text-sm text-slate-500">Prevent AI from controlling lights, switches, and whole-home modes (Sleep, Away, Home).</p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={settings.ghost_mode_whole_home === 'true' || settings.ghost_mode_whole_home === undefined}
+                            onChange={(e) => handleUpdateSingleSetting('ghost_mode_whole_home', e.target.checked ? 'true' : 'false')}
+                          />
+                          <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                        </label>
+                      </div>
                     </CardContent>
                   </Card>
 
@@ -883,6 +1006,34 @@ export default function App() {
                       </div>
                     </CardContent>
                   </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>System Updates</CardTitle>
+                      <CardDescription>Check for and apply updates from the GitHub repository.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-4">
+                          <Button onClick={handleCheckUpdate} disabled={updateStatus.checking || updateStatus.updating} variant="outline">
+                            {updateStatus.checking ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                            Check for Updates
+                          </Button>
+                          {updateStatus.available && (
+                            <Button onClick={handleApplyUpdate} disabled={updateStatus.updating} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                              {updateStatus.updating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : null}
+                              {updateStatus.updating ? 'Updating...' : 'Apply Update'}
+                            </Button>
+                          )}
+                        </div>
+                        {updateStatus.message && (
+                          <div className={`p-3 rounded-lg text-sm ${updateStatus.available ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
+                            {updateStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
                 </>
               )}
 
@@ -892,8 +1043,39 @@ export default function App() {
                   <CardDescription>Select devices to track and add notes (e.g., "Anthony's Phone", "Zone 1 Heating") to help the AI understand their purpose.</CardDescription>
                 </CardHeader>
                 <CardContent>
+                  <div className="space-y-4 mb-4">
+                    <div className="flex flex-col md:flex-row gap-3">
+                      <div className="flex-1">
+                        <Input 
+                          placeholder="Search devices by name or ID..." 
+                          value={deviceSearch}
+                          onChange={(e) => setDeviceSearch(e.target.value)}
+                        />
+                      </div>
+                      <select 
+                        className="h-10 px-3 py-2 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+                        value={deviceTypeFilter}
+                        onChange={(e) => setDeviceTypeFilter(e.target.value)}
+                      >
+                        <option value="all">All Types</option>
+                        {uniqueDomains.map(domain => (
+                          <option key={domain as string} value={domain as string}>{domain}</option>
+                        ))}
+                      </select>
+                      <select 
+                        className="h-10 px-3 py-2 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+                        value={deviceStatusFilter}
+                        onChange={(e) => setDeviceStatusFilter(e.target.value)}
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="tracked">Tracked Only</option>
+                        <option value="untracked">Untracked Only</option>
+                      </select>
+                    </div>
+                  </div>
+
                   <div className="max-h-96 overflow-y-auto space-y-4 pr-4">
-                    {entities.length > 0 ? entities.map(entity => (
+                    {filteredEntities.length > 0 ? filteredEntities.map(entity => (
                       <div key={entity.entity_id} className="flex flex-col space-y-2 p-3 bg-slate-50 rounded-lg border border-slate-100">
                         <div className="flex items-center justify-between">
                           <div>
@@ -920,7 +1102,9 @@ export default function App() {
                         )}
                       </div>
                     )) : (
-                      <div className="text-sm text-slate-500 text-center py-4">No entities found. Check your HA connection.</div>
+                      <div className="text-sm text-slate-500 text-center py-8 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                        {entities.length === 0 ? "No entities found. Check your HA connection." : "No devices match your search/filter criteria."}
+                      </div>
                     )}
                   </div>
                 </CardContent>
@@ -939,7 +1123,7 @@ export default function App() {
                     <p>sudo npm install -g pm2</p>
                     <br/>
                     <p># 2. Clone repository and install dependencies</p>
-                    <p>git clone https://github.com/YOUR_GITHUB_USERNAME/homebrain.git</p>
+                    <p>git clone https://github.com/cstone1983/AI-Climate-Brain.git homebrain</p>
                     <p>cd homebrain</p>
                     <p>npm install</p>
                     <br/>

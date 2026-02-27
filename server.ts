@@ -5,6 +5,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI } from "@google/genai";
 import { WebSocketServer, WebSocket } from "ws";
+import { exec } from "child_process";
+import util from "util";
+
+const execAsync = util.promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +33,7 @@ db.exec(`
     entity_id TEXT,
     state TEXT,
     attributes TEXT,
-    last_changed DATETIME DEFAULT CURRENT_TIMESTAMP
+    last_changed DATETIME DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE TABLE IF NOT EXISTS schedules (
@@ -37,7 +41,7 @@ db.exec(`
     name TEXT,
     description TEXT,
     schedule_data TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE TABLE IF NOT EXISTS tracked_entities (
@@ -48,7 +52,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE TABLE IF NOT EXISTS ai_reasoning (
@@ -56,7 +60,7 @@ db.exec(`
     context TEXT,
     decision TEXT,
     reasoning TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE TABLE IF NOT EXISTS users (
@@ -116,21 +120,57 @@ async function fillHistoryGaps() {
     const lastRecord = db.prepare("SELECT MAX(last_changed) as last_ts FROM device_history").get() as any;
     let startTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // Default 24h ago
     if (lastRecord && lastRecord.last_ts) {
-      startTime = new Date(lastRecord.last_ts).toISOString();
+      // Try to parse the local time string back to a valid Date object
+      const parsedDate = new Date(lastRecord.last_ts + 'Z');
+      if (!isNaN(parsedDate.getTime())) {
+        startTime = parsedDate.toISOString();
+      }
     }
     
-    const historyData = await fetchHA(`/api/history/period/${startTime}`);
-    if (historyData && Array.isArray(historyData)) {
-      const insertHistory = db.prepare("INSERT OR IGNORE INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, ?)");
-      db.transaction(() => {
-        for (const entityHistory of historyData) {
-          for (const stateObj of entityHistory) {
-            insertHistory.run(stateObj.entity_id, stateObj.state, JSON.stringify(stateObj.attributes || {}), stateObj.last_changed);
-          }
+    const trackedRows = db.prepare("SELECT entity_id FROM tracked_entities WHERE tracked = 1").all() as any[];
+    const trackedIds = trackedRows.map(t => t.entity_id);
+    
+    // Fetch all states to find all climate and temperature entities
+    const allStates = await fetchHA('/api/states');
+    let entitiesToFetch = new Set<string>(trackedIds);
+    
+    if (allStates && Array.isArray(allStates)) {
+      for (const stateObj of allStates) {
+        if (stateObj.entity_id.startsWith('climate.') || 
+            (stateObj.entity_id.startsWith('sensor.') && stateObj.entity_id.includes('temperature'))) {
+          entitiesToFetch.add(stateObj.entity_id);
         }
-      })();
-      console.log("History gap fill complete.");
+      }
     }
+    
+    const entitiesArray = Array.from(entitiesToFetch);
+    if (entitiesArray.length === 0) {
+      console.log("No entities to fetch history for. Skipping history gap fill.");
+      return;
+    }
+
+    console.log(`Fetching history for ${entitiesArray.length} entities in chunks...`);
+    const chunkSize = 20;
+    const insertHistory = db.prepare("INSERT OR IGNORE INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, ?)");
+    
+    for (let i = 0; i < entitiesArray.length; i += chunkSize) {
+      const chunk = entitiesArray.slice(i, i + chunkSize);
+      try {
+        const historyData = await fetchHA(`/api/history/period/${encodeURIComponent(startTime)}?filter_entity_id=${chunk.join(',')}`);
+        if (historyData && Array.isArray(historyData)) {
+          db.transaction(() => {
+            for (const entityHistory of historyData) {
+              for (const stateObj of entityHistory) {
+                insertHistory.run(stateObj.entity_id, stateObj.state, JSON.stringify(stateObj.attributes || {}), stateObj.last_changed);
+              }
+            }
+          })();
+        }
+      } catch (chunkErr: any) {
+        console.error(`Error fetching history chunk ${i / chunkSize + 1}:`, chunkErr.message);
+      }
+    }
+    console.log("History gap fill complete.");
   } catch (e) {
     console.error("Gap fill error", e);
   }
@@ -178,7 +218,7 @@ function connectToHA() {
         const state = msg.event.data.new_state?.state;
         const attributes = JSON.stringify(msg.event.data.new_state?.attributes || {});
         
-        const insertHistory = db.prepare("INSERT INTO device_history (entity_id, state, attributes) VALUES (?, ?, ?)");
+        const insertHistory = db.prepare("INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, datetime('now', 'localtime'))");
         const info = insertHistory.run(entity_id, state, attributes);
         
         const newRecord = db.prepare("SELECT * FROM device_history WHERE id = ?").get(info.lastInsertRowid);
@@ -186,7 +226,7 @@ function connectToHA() {
         // Real-time Self-Correction Logic
         // If a person or tracker arrives home, check if we need to self-correct the HVAC
         if ((entity_id.startsWith('person.') || entity_id.startsWith('device_tracker.')) && state === 'home') {
-           const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning) VALUES (?, ?, ?)");
+           const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now', 'localtime'))");
            insertReasoning.run(
              "Real-time Presence Event", 
              "Self-Correction Triggered", 
@@ -237,7 +277,37 @@ async function fetchHA(endpoint: string) {
       "Content-Type": "application/json"
     }
   });
-  if (!res.ok) throw new Error(`HA API Error: ${res.statusText}`);
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`HA API Error (${res.status} ${res.statusText}) on ${endpointUrl}: ${errorText}`);
+  }
+  return res.json();
+}
+
+async function callHAService(domain: string, service: string, serviceData: any) {
+  const settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
+  const settings: Record<string, string> = {};
+  for (const row of settingsRows) {
+    settings[row.key] = row.value;
+  }
+  const ha_url = settings["ha_url"];
+  const ha_token = settings["ha_token"];
+  if (!ha_url || !ha_token) return null;
+
+  const baseUrl = ha_url.endsWith('/') ? ha_url.slice(0, -1) : ha_url;
+
+  const res = await fetch(`${baseUrl}/api/services/${domain}/${service}`, {
+    method: 'POST',
+    headers: {
+      "Authorization": `Bearer ${ha_token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(serviceData)
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`HA Service Error (${res.status} ${res.statusText}) on ${domain}/${service}: ${errorText}`);
+  }
   return res.json();
 }
 
@@ -245,7 +315,12 @@ async function fetchHA(endpoint: string) {
 async function runDailyAnalysis() {
   try {
     console.log("Running daily AI analysis...");
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("GEMINI_API_KEY is not defined");
+      return;
+    }
+    const ai = new GoogleGenAI({ apiKey });
     
     // Fetch all states (includes automations, scripts, devices)
     const states = await fetchHA('/api/states');
@@ -254,14 +329,23 @@ async function runDailyAnalysis() {
       return;
     }
 
-    // Fetch history for the last 24 hours
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const history = await fetchHA(`/api/history/period/${yesterday}`);
-
     // Get tracked entities and their notes (roles)
     const trackedRows = db.prepare("SELECT entity_id, notes FROM tracked_entities WHERE tracked = 1").all() as any[];
     const trackedIds = trackedRows.map(t => t.entity_id);
     const trackedContext = trackedRows.map(t => ({ id: t.entity_id, notes: t.notes }));
+
+    // Fetch history for the last 24 hours directly from our local database
+    let history: any[] = [];
+    if (trackedIds.length > 0) {
+      const placeholders = trackedIds.map(() => '?').join(',');
+      history = db.prepare(`
+        SELECT entity_id, state, attributes, last_changed 
+        FROM device_history 
+        WHERE last_changed >= datetime('now', '-1 day', 'localtime') 
+        AND entity_id IN (${placeholders})
+        ORDER BY last_changed ASC
+      `).all(...trackedIds) as any[];
+    }
 
     // Filter states
     const automations = states.filter((s: any) => s.entity_id.startsWith('automation.'));
@@ -280,6 +364,8 @@ async function runDailyAnalysis() {
       2. Infer custody schedules (alternating weeks/days) based on presence data (especially Anthony's phone or other noted trackers).
       3. Infer school/work arrival times and pre-heat/pre-cool the appropriate zones BEFORE arrival.
       4. Provide detailed reasoning for your decisions so the user can trust your logic.
+      
+      IMPORTANT: The home is located in the Eastern Standard Time (EST) timezone. All times you generate, reference, and reason about MUST be in EST.
       
       USER PROVIDED CONTEXT / UPCOMING EVENTS:
       "${userContext}"
@@ -323,19 +409,19 @@ async function runDailyAnalysis() {
     const result = JSON.parse(response.text || "{}");
     
     if (result.schedule && result.schedule.name) {
-      const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data) VALUES (?, ?, ?)");
+      const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data, created_at) VALUES (?, ?, ?, datetime('now', 'localtime'))");
       insertSchedule.run(result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data));
     }
     
     if (result.insights && Array.isArray(result.insights)) {
-      const insertInsight = db.prepare("INSERT INTO insights (content) VALUES (?)");
+      const insertInsight = db.prepare("INSERT INTO insights (content, created_at) VALUES (?, datetime('now', 'localtime'))");
       for (const insight of result.insights) {
         insertInsight.run(insight);
       }
     }
 
     if (result.reasoning && Array.isArray(result.reasoning)) {
-      const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning) VALUES (?, ?, ?)");
+      const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now', 'localtime'))");
       for (const r of result.reasoning) {
         insertReasoning.run(r.context || "General", r.decision || "Adjustment", r.reasoning || "");
       }
@@ -351,6 +437,133 @@ async function runDailyAnalysis() {
 
 // Run daily analysis every 24 hours
 setInterval(runDailyAnalysis, 24 * 60 * 60 * 1000);
+
+// --- Real-time AI Control Loop ---
+async function executeRealTimeAIControl() {
+  try {
+    const settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
+    const settings: Record<string, string> = {};
+    for (const row of settingsRows) {
+      settings[row.key] = row.value;
+    }
+    
+    // Default to true (safe) if not explicitly disabled
+    const ghostModeHvac = settings.ghost_mode_hvac !== 'false';
+    const ghostModeWholeHome = settings.ghost_mode_whole_home !== 'false';
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("GEMINI_API_KEY is not defined");
+      return;
+    }
+    const ai = new GoogleGenAI({ apiKey });
+    
+    // Get tracked entities
+    const trackedRows = db.prepare("SELECT entity_id, notes FROM tracked_entities WHERE tracked = 1").all() as any[];
+    const trackedIds = trackedRows.map(t => t.entity_id);
+    const trackedContext = trackedRows.map(t => ({ id: t.entity_id, notes: t.notes }));
+
+    if (trackedIds.length === 0) return;
+
+    // Fetch current states
+    const states = await fetchHA('/api/states');
+    if (!states) return;
+    const trackedStates = states.filter((s: any) => trackedIds.includes(s.entity_id));
+
+    // Fetch recent history (last 2 hours)
+    const placeholders = trackedIds.map(() => '?').join(',');
+    const recentHistory = db.prepare(`
+      SELECT entity_id, state, attributes, last_changed 
+      FROM device_history 
+      WHERE last_changed >= datetime('now', '-2 hours', 'localtime') 
+      AND entity_id IN (${placeholders})
+      ORDER BY last_changed ASC
+    `).all(...trackedIds) as any[];
+
+    const prompt = `
+      You are the HomeBrain AI real-time controller.
+      Your job is to analyze the current state of the home and the recent history (last 2 hours) to determine if any IMMEDIATE actions need to be taken.
+      
+      CRITICAL GOALS:
+      1. HVAC Control: Adjust thermostat set points based on occupancy, time of day, and historical patterns.
+      2. Whole Home Modes: Analyze trends (e.g., TV off, lights off, motion stopped) to infer if the house is going to "Sleep", "Away", or "Home". Turn off lights/switches if appropriate.
+      
+      IMPORTANT: The home is in Eastern Standard Time (EST).
+      
+      Tracked Devices & User Notes:
+      ${JSON.stringify(trackedContext)}
+      
+      Current States:
+      ${JSON.stringify(trackedStates)}
+      
+      Recent History (Last 2h):
+      ${JSON.stringify(recentHistory)}
+      
+      Return a JSON object with EXACTLY this structure:
+      {
+        "actions": [
+          {
+            "type": "hvac" | "whole_home",
+            "domain": "climate" | "light" | "switch",
+            "service": "set_temperature" | "turn_on" | "turn_off",
+            "entity_id": "climate.zone_1",
+            "service_data": { "temperature": 72 },
+            "reasoning": "Anthony just arrived home, pre-heating the living room."
+          }
+        ]
+      }
+      If no actions are needed right now, return { "actions": [] }.
+    `;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const result = JSON.parse(response.text || "{}");
+    
+    if (result.actions && Array.isArray(result.actions)) {
+      for (const action of result.actions) {
+        // Log the reasoning
+        const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now', 'localtime'))");
+        const context = action.type === 'hvac' ? 'Real-time HVAC Control' : 'Real-time Whole Home Control';
+        const decisionText = `${action.service} on ${action.entity_id} ${action.service_data ? JSON.stringify(action.service_data) : ''}`;
+        
+        let executed = false;
+        let ghostModeActive = false;
+
+        if (action.type === 'hvac') {
+          if (ghostModeHvac) {
+            ghostModeActive = true;
+          } else {
+            await callHAService(action.domain, action.service, { entity_id: action.entity_id, ...action.service_data });
+            executed = true;
+          }
+        } else if (action.type === 'whole_home') {
+          if (ghostModeWholeHome) {
+            ghostModeActive = true;
+          } else {
+            await callHAService(action.domain, action.service, { entity_id: action.entity_id, ...action.service_data });
+            executed = true;
+          }
+        }
+
+        const finalReasoning = ghostModeActive ? `[GHOST MODE - ACTION BLOCKED] ${action.reasoning}` : `[EXECUTED] ${action.reasoning}`;
+        insertReasoning.run(context, decisionText, finalReasoning);
+      }
+      
+      if (result.actions.length > 0) {
+        broadcastToFrontend({ type: 'NEW_REASONING' });
+      }
+    }
+  } catch (error) {
+    console.error("Real-time control error:", error);
+  }
+}
+
+// Run real-time control every 5 minutes
+setInterval(executeRealTimeAIControl, 5 * 60 * 1000);
 
 // --- API Routes ---
 
@@ -419,28 +632,45 @@ app.post("/api/settings", (req, res) => {
   res.json({ success: true });
 });
 
-// Mock HA Sync / Event Simulation
-app.post("/api/ha/sync", async (req, res) => {
-  const insertHistory = db.prepare("INSERT INTO device_history (entity_id, state, attributes) VALUES (?, ?, ?)");
-  
-  const entities = ["climate.zone_1_living_room", "climate.zone_2_master", "climate.zone_3_kids", "climate.zone_4_basement", "person.anthony", "light.kitchen"];
-  const states = ["heat", "cool", "off", "home", "away", "on"];
-  
-  const entity = entities[Math.floor(Math.random() * entities.length)];
-  const state = states[Math.floor(Math.random() * states.length)];
-  
-  let attributes: any = { source: "simulated_event" };
-  if (entity.startsWith('climate.')) {
-    attributes.current_temperature = Math.floor(Math.random() * 10) + 65;
-    attributes.temperature = Math.floor(Math.random() * 5) + 68;
+// System Update Endpoints
+app.get("/api/system/check-update", async (req, res) => {
+  try {
+    // Check if we are in a git repository
+    await execAsync('git rev-parse --is-inside-work-tree');
+    
+    // Fetch latest from origin
+    await execAsync('git fetch origin');
+    
+    const local = await execAsync('git rev-parse HEAD');
+    const remote = await execAsync('git rev-parse @{u}');
+    
+    if (local.stdout.trim() !== remote.stdout.trim()) {
+      res.json({ updateAvailable: true, message: "A new version is available on GitHub." });
+    } else {
+      res.json({ updateAvailable: false, message: "System is up to date." });
+    }
+  } catch (e: any) {
+    console.error("Update check failed:", e.message);
+    res.json({ updateAvailable: false, message: "Could not check for updates. Ensure this is a git repository connected to origin." });
   }
+});
 
-  const info = insertHistory.run(entity, state, JSON.stringify(attributes));
-  
-  const newRecord = db.prepare("SELECT * FROM device_history WHERE id = ?").get(info.lastInsertRowid);
-  broadcastToFrontend({ type: 'NEW_HISTORY', data: newRecord });
-  
-  res.json({ success: true, message: "Simulated 1 event" });
+app.post("/api/system/update", async (req, res) => {
+  try {
+    // Pull latest changes
+    await execAsync('git pull origin main');
+    
+    // Install dependencies
+    await execAsync('npm install');
+    
+    // Build the application
+    await execAsync('npm run build');
+    
+    res.json({ success: true, message: "Update pulled and built successfully! Please restart the service (e.g., pm2 restart homebrain) to apply the changes." });
+  } catch (e: any) {
+    console.error("Update failed:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 app.get("/api/history", (req, res) => {
@@ -448,9 +678,43 @@ app.get("/api/history", (req, res) => {
   res.json(history);
 });
 
+app.get("/api/history/graph", (req, res) => {
+  const zonesParam = req.query.zones as string;
+  const timeframe = req.query.timeframe as string || '24h';
+  
+  if (!zonesParam) {
+    return res.json([]);
+  }
+  
+  const zones = JSON.parse(zonesParam);
+  if (!Array.isArray(zones) || zones.length === 0) {
+    return res.json([]);
+  }
+  
+  let timeModifier = '-1 day';
+  if (timeframe === '7d') timeModifier = '-7 days';
+  else if (timeframe === '30d') timeModifier = '-30 days';
+  else if (timeframe === 'all') timeModifier = '-100 years'; // practically all
+
+  const placeholders = zones.map(() => '?').join(',');
+  const graphData = db.prepare(`
+    SELECT entity_id, state, attributes, last_changed 
+    FROM device_history 
+    WHERE last_changed >= datetime('now', '${timeModifier}', 'localtime') 
+    AND entity_id IN (${placeholders})
+    ORDER BY last_changed ASC
+  `).all(...zones);
+  
+  res.json(graphData);
+});
+
 app.post("/api/ai/generate-schedule", async (req, res) => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not defined" });
+    }
+    const ai = new GoogleGenAI({ apiKey });
     
     const history = db.prepare("SELECT * FROM device_history ORDER BY last_changed DESC LIMIT 50").all();
     
