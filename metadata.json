@@ -1,0 +1,5 @@
+{
+  "name": "HomeBrain AI",
+  "description": "An AI-powered interface to manage Home Assistant, analyze history, and generate smart schedules.",
+  "requestFramePermissions": []
+}
