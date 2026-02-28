@@ -23,13 +23,19 @@ import {
   WifiOff,
   ShieldAlert,
   UserPlus,
-  Trash2
+  Trash2,
+  Scan,
+  CheckCircle,
+  AlertCircle
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Label } from './components/ui/label';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { ScheduleCalendar } from './components/ScheduleCalendar';
+
+import { GoogleGenAI, Type } from "@google/genai";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -67,6 +73,10 @@ export default function App() {
   const [deviceSearch, setDeviceSearch] = useState('');
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('all');
   const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
+  const [isScanning, setIsScanning] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
+  const [scheduleViewMode, setScheduleViewMode] = useState<'calendar' | 'json'>('calendar');
 
   useEffect(() => {
     if (currentUser) {
@@ -91,7 +101,7 @@ export default function App() {
           setHistory(prev => [message.data, ...prev].slice(0, 100));
           // If the new history event is for a graphed zone, refresh the graph data
           if (settings.dashboard_graph_zones && settings.dashboard_graph_zones.includes(message.data.entity_id)) {
-            fetchGraphData(settings.dashboard_graph_zones);
+            fetchGraphData(settings.dashboard_graph_zones, graphTimeframe);
           }
         } else if (message.type === 'NEW_REASONING') {
           fetchReasoning();
@@ -218,6 +228,188 @@ export default function App() {
     handleToggleTracked(entity_id, current.tracked, notes);
   };
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      executeRealTimeAIControl();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [settings]);
+
+  const executeRealTimeAIControl = async () => {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return;
+      const ai = new GoogleGenAI({ apiKey });
+
+      const ghostModeHvac = settings.ghost_mode_hvac !== 'false';
+      const ghostModeWholeHome = settings.ghost_mode_whole_home !== 'false';
+
+      const res = await fetch('/api/ai/real-time-context');
+      const data = await res.json();
+      if (!data.trackedContext || data.trackedContext.length === 0) return;
+
+      const prompt = `
+        You are the HomeBrain AI real-time controller.
+        Analyze the current state and recent history to determine if actions are needed.
+        
+        SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(data.systemSnapshot)}
+        Tracked Devices: ${JSON.stringify(data.trackedContext)}
+        Current States: ${JSON.stringify(data.trackedStates)}
+        Recent History: ${JSON.stringify(data.recentHistory)}
+        
+        Return a JSON object with:
+        { "actions": [{ "type": "hvac"|"whole_home", "domain": "...", "service": "...", "entity_id": "...", "service_data": {...}, "reasoning": "..." }] }
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: { 
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              actions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    type: { type: Type.STRING },
+                    domain: { type: Type.STRING },
+                    service: { type: Type.STRING },
+                    entity_id: { type: Type.STRING },
+                    service_data: { type: Type.OBJECT },
+                    reasoning: { type: Type.STRING }
+                  },
+                  required: ["type", "domain", "service", "entity_id", "reasoning"]
+                }
+              }
+            },
+            required: ["actions"]
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text || "{}");
+      if (result.actions && Array.isArray(result.actions)) {
+        for (const action of result.actions) {
+          let ghostModeActive = false;
+          if (action.type === 'hvac' && ghostModeHvac) ghostModeActive = true;
+          if (action.type === 'whole_home' && ghostModeWholeHome) ghostModeActive = true;
+
+          if (!ghostModeActive) {
+            await fetch('/api/ha/call-service', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                domain: action.domain,
+                service: action.service,
+                serviceData: { entity_id: action.entity_id, ...action.service_data }
+              })
+            });
+          }
+
+          const finalReasoning = ghostModeActive ? `[GHOST MODE - ACTION BLOCKED] ${action.reasoning}` : `[EXECUTED] ${action.reasoning}`;
+          const decisionText = `${action.service} on ${action.entity_id} ${action.service_data ? JSON.stringify(action.service_data) : ''}`;
+          
+          await fetch('/api/ai/save-reasoning', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              context: action.type === 'hvac' ? 'Real-time HVAC Control' : 'Real-time Whole Home Control',
+              decision: decisionText,
+              reasoning: finalReasoning
+            })
+          });
+        }
+        if (result.actions.length > 0) fetchReasoning();
+      }
+    } catch (e) {
+      console.error("Real-time control failed", e);
+    }
+  };
+
+  const handleAIScan = async () => {
+    setIsScanning(true);
+    setScanResults([]);
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not defined");
+      }
+      const ai = new GoogleGenAI({ apiKey });
+      
+      const res = await fetch('/api/ha/entities');
+      const data = await res.json();
+      if (!data.entities || !Array.isArray(data.entities)) {
+        throw new Error("Could not fetch entities from Home Assistant");
+      }
+
+      const entityList = data.entities.map((e: any) => ({
+        entity_id: e.entity_id,
+        friendly_name: e.friendly_name,
+        domain: e.domain
+      }));
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system. 
+        Focus on:
+        1. Climate/Thermostat entities.
+        2. Temperature/Humidity sensors.
+        3. Presence/Occupancy sensors (person, device_tracker, binary_sensor.motion).
+        4. Main lights or switches that indicate occupancy or activity.
+        
+        Return a JSON array of objects with 'entity_id' and a brief 'reason' why it should be tracked.
+        
+        Entities: ${JSON.stringify(entityList.slice(0, 300))} (truncated if too many)`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                entity_id: { type: Type.STRING },
+                reason: { type: Type.STRING }
+              },
+              required: ["entity_id", "reason"]
+            }
+          }
+        }
+      });
+
+      const suggestions = JSON.parse(response.text || "[]");
+      if (Array.isArray(suggestions)) {
+        setScanResults(suggestions);
+      } else {
+        console.error("Invalid scan results", suggestions);
+      }
+    } catch (e: any) {
+      console.error("AI Scan failed", e.message);
+      alert("AI Scan failed: " + e.message);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleBulkTrack = async (entitiesToTrack: {entity_id: string, notes: string}[]) => {
+    try {
+      const res = await fetch('/api/ha/bulk-track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entities: entitiesToTrack })
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchEntities();
+        setScanResults([]);
+      }
+    } catch (e) {
+      console.error("Bulk track failed", e);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const res = await fetch('/api/auth/login', {
@@ -246,6 +438,21 @@ export default function App() {
       body: JSON.stringify(settings)
     });
     alert('Settings saved');
+  };
+
+  const handleSyncSystemData = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/ha/sync-system-data', { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to sync system data");
+      const data = await res.json();
+      alert(data.message || "System data synced successfully!");
+    } catch (e: any) {
+      console.error("Sync failed", e);
+      alert("Sync failed: " + e.message);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleUpdateSingleSetting = async (key: string, value: string) => {
@@ -292,17 +499,107 @@ export default function App() {
   const handleGenerateSchedule = async () => {
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/ai/trigger-daily-analysis', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        alert('Daily analysis started in background. Check back soon for new schedules and insights.');
-      } else {
-        alert('Failed to start analysis: ' + data.error);
-      }
-    } catch (e) {
-      alert('Error starting analysis');
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is not defined");
+      const ai = new GoogleGenAI({ apiKey });
+
+      const contextRes = await fetch('/api/ai/analysis-context');
+      const context = await contextRes.json();
+
+      const prompt = `
+        You are an intelligent Home Assistant brain managing a complex multi-zone HVAC setup (scaling up to 7 zones) and lighting.
+        Analyze the following smart home data from the last 14 days.
+        
+        CRITICAL GOALS:
+        1. Generate a rolling 14-day schedule.
+        2. Infer custody schedules (alternating weeks/days) based on presence patterns in the 14-day history.
+        3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones.
+        4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
+        5. Provide detailed reasoning for every schedule block.
+        
+        USER PROVIDED CONTEXT: "${context.userContext}"
+        SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(context.systemSnapshot)}
+        Tracked Devices: ${JSON.stringify(context.trackedEntities)}
+        Recent History (Last 14 Days): ${JSON.stringify(context.history)}
+        
+        Return a JSON object with:
+        {
+          "insights": ["insight 1", ...],
+          "reasoning": [{ "context": "...", "decision": "...", "reasoning": "..." }],
+          "schedule": { "name": "...", "description": "...", "schedule_data": [...] }
+        }
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: { 
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              insights: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              },
+              reasoning: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    context: { type: Type.STRING },
+                    decision: { type: Type.STRING },
+                    reasoning: { type: Type.STRING }
+                  },
+                  required: ["context", "decision", "reasoning"]
+                }
+              },
+              schedule: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  schedule_data: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        day: { type: Type.STRING },
+                        time: { type: Type.STRING },
+                        entity_id: { type: Type.STRING },
+                        state: { type: Type.STRING },
+                        reasoning: { type: Type.STRING }
+                      },
+                      required: ["day", "time", "entity_id", "state"]
+                    }
+                  }
+                },
+                required: ["name", "schedule_data"]
+              }
+            },
+            required: ["insights", "reasoning", "schedule"]
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text || "{}");
+      
+      await fetch('/api/ai/save-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(result)
+      });
+      
+      fetchInsights();
+      fetchReasoning();
+      fetchSchedules();
+      alert("Analysis and schedule generation completed successfully!");
+    } catch (e: any) {
+      console.error("Analysis failed", e);
+      alert("Analysis failed: " + e.message);
+    } finally {
+      setIsGenerating(false);
     }
-    setIsGenerating(false);
   };
 
   const handleToggleGraphZone = (entity_id: string) => {
@@ -760,32 +1057,61 @@ export default function App() {
                   <h2 className="text-lg font-semibold">Rolling 14-Day Schedules</h2>
                   <p className="text-sm text-slate-500">Multi-zone predictive schedules based on inferred occupancy and patterns.</p>
                 </div>
-                <Button onClick={handleGenerateSchedule} disabled={isGenerating} className="bg-indigo-600 hover:bg-indigo-700">
-                  {isGenerating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
-                  Generate New Schedule
-                </Button>
+                <div className="flex items-center gap-3">
+                  <div className="flex bg-slate-200 p-1 rounded-lg">
+                    <button 
+                      onClick={() => setScheduleViewMode('calendar')}
+                      className={`px-3 py-1 text-xs rounded-md transition-all ${scheduleViewMode === 'calendar' ? 'bg-white shadow-sm text-slate-900 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Calendar
+                    </button>
+                    <button 
+                      onClick={() => setScheduleViewMode('json')}
+                      className={`px-3 py-1 text-xs rounded-md transition-all ${scheduleViewMode === 'json' ? 'bg-white shadow-sm text-slate-900 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      JSON
+                    </button>
+                  </div>
+                  <Button onClick={handleGenerateSchedule} disabled={isGenerating} className="bg-indigo-600 hover:bg-indigo-700">
+                    {isGenerating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+                    Generate New Schedule
+                  </Button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 gap-6">
                 {schedules.map((schedule: any) => (
-                  <Card key={schedule.id}>
-                    <CardHeader>
-                      <CardTitle>{schedule.name}</CardTitle>
-                      <CardDescription>{new Date(schedule.created_at + 'Z').toLocaleString()}</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-slate-600 mb-4">{schedule.description}</p>
-                      <div className="bg-slate-900 rounded-lg p-4 overflow-auto max-h-48">
-                        <pre className="text-xs text-green-400 font-mono">
-                          {JSON.stringify(JSON.parse(schedule.schedule_data), null, 2)}
-                        </pre>
+                  <Card key={schedule.id} className="overflow-hidden">
+                    <CardHeader className="bg-white border-b border-slate-100">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <CardTitle>{schedule.name}</CardTitle>
+                          <CardDescription>{new Date(schedule.created_at + 'Z').toLocaleString()}</CardDescription>
+                        </div>
                       </div>
+                    </CardHeader>
+                    <CardContent className="p-6">
+                      <p className="text-sm text-slate-600 mb-6">{schedule.description}</p>
+                      
+                      {scheduleViewMode === 'calendar' ? (
+                        <div className="h-[600px]">
+                          <ScheduleCalendar data={JSON.parse(schedule.schedule_data)} />
+                        </div>
+                      ) : (
+                        <div className="bg-slate-900 rounded-xl p-6 overflow-auto max-h-[600px] border border-white/10">
+                          <pre className="text-xs text-emerald-400 font-mono leading-relaxed">
+                            {JSON.stringify(JSON.parse(schedule.schedule_data), null, 2)}
+                          </pre>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 ))}
                 {schedules.length === 0 && (
-                  <div className="col-span-2 text-center py-12 text-slate-500">
-                    No schedules generated yet. Click the button above to analyze your data.
+                  <div className="text-center py-24 bg-white rounded-2xl border border-dashed border-slate-200">
+                    <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                    <p className="text-slate-500 font-medium">No schedules generated yet.</p>
+                    <p className="text-sm text-slate-400">Click "Generate New Schedule" to analyze your data.</p>
                   </div>
                 )}
               </div>
@@ -1034,16 +1360,134 @@ export default function App() {
                       </div>
                     </CardContent>
                   </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>AI System Context Sync</CardTitle>
+                      <CardDescription>Pull all entity information, system config, and targeted history to provide the AI with a complete understanding of your Home Assistant environment.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        <p className="text-sm text-slate-500">
+                          This process syncs every entity, state, and attribute, along with core system setup and recent history for climate, weather, and sensors. 
+                          This data is stored internally to help the AI explicitly know entity variables and determine what to watch for climate automation.
+                        </p>
+                        <Button 
+                          onClick={handleSyncSystemData} 
+                          disabled={isSyncing}
+                          className="bg-indigo-600 text-white hover:bg-indigo-700"
+                        >
+                          {isSyncing ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                              Syncing Data...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Sync System Data for AI
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
                 </>
               )}
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Tracked Devices & Roles</CardTitle>
-                  <CardDescription>Select devices to track and add notes (e.g., "Anthony's Phone", "Zone 1 Heating") to help the AI understand their purpose.</CardDescription>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <CardTitle>Tracked Devices & Roles</CardTitle>
+                      <CardDescription>Select devices to track and add notes to help the AI understand their purpose.</CardDescription>
+                    </div>
+                    <Button 
+                      onClick={handleAIScan} 
+                      disabled={isScanning || haStatus !== 'connected'}
+                      variant="outline"
+                      className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                    >
+                      {isScanning ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Scan className="w-4 h-4 mr-2" />}
+                      AI Scan for Entities
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
+                  {scanResults.length > 0 && (
+                    <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl space-y-4">
+                      <div className="flex justify-between items-center">
+                        <h4 className="text-sm font-semibold text-indigo-900 flex items-center">
+                          <BrainCircuit className="w-4 h-4 mr-2" />
+                          AI Recommended Entities ({scanResults.length})
+                        </h4>
+                        <div className="flex gap-2">
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            onClick={() => setScanResults([])}
+                            className="text-indigo-600 hover:bg-indigo-100"
+                          >
+                            Dismiss
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            onClick={() => handleBulkTrack(scanResults.map(s => ({ entity_id: s.entity_id, notes: s.reason })))}
+                            className="bg-indigo-600 text-white hover:bg-indigo-700"
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            Track All Recommended
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {scanResults.map(result => (
+                          <div key={result.entity_id} className="text-xs p-2 bg-white rounded border border-indigo-100 flex justify-between items-center">
+                            <div>
+                              <span className="font-mono font-bold text-indigo-900">{result.entity_id}</span>
+                              <p className="text-slate-500 italic">{result.reason}</p>
+                            </div>
+                            {!trackedEntities[result.entity_id]?.tracked && (
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-6 px-2 text-indigo-600"
+                                onClick={() => handleBulkTrack([{ entity_id: result.entity_id, notes: result.reason }])}
+                              >
+                                Track
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="space-y-4 mb-4">
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="text-xs"
+                        onClick={() => {
+                          const climate = entities.filter(e => e.domain === 'climate' || e.domain === 'person' || e.domain === 'device_tracker');
+                          handleBulkTrack(climate.map(e => ({ entity_id: e.entity_id, notes: `Auto-tracked ${e.domain}` })));
+                        }}
+                      >
+                        <Zap className="w-3 h-3 mr-1" /> Track All Climate & Presence
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="text-xs"
+                        onClick={() => {
+                          const temps = entities.filter(e => e.entity_id.includes('temperature'));
+                          handleBulkTrack(temps.map(e => ({ entity_id: e.entity_id, notes: 'Auto-tracked temperature sensor' })));
+                        }}
+                      >
+                        <Thermometer className="w-3 h-3 mr-1" /> Track All Temp Sensors
+                      </Button>
+                    </div>
                     <div className="flex flex-col md:flex-row gap-3">
                       <div className="flex-1">
                         <Input 
