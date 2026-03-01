@@ -508,20 +508,30 @@ async function fetchHA(endpoint: string, timeoutMs = 30000) {
   }
   const ha_url = settings["ha_url"];
   const ha_token = settings["ha_token"];
-  if (!ha_url || !ha_token) return null;
+  if (!ha_url || !ha_token) {
+    console.warn("[HA REST] Missing URL or Token in settings.");
+    return null;
+  }
 
   const baseUrl = ha_url.endsWith('/') ? ha_url.slice(0, -1) : ha_url;
   const endpointUrl = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const fullUrl = `${baseUrl}${endpointUrl}`;
 
   if (isLocalAddress(baseUrl)) {
     console.warn(`[HA REST] Warning: Using local address ${baseUrl}. This may fail in cloud environments.`);
+    // Prevent infinite loops if ha_url points to this server
+    if (baseUrl.includes(`localhost:${PORT}`) || baseUrl.includes(`0.0.0.0:${PORT}`) || baseUrl.includes(`127.0.0.1:${PORT}`)) {
+      throw new Error(`HA URL points to the local HomeBrain server (${baseUrl}). This would cause an infinite loop. Please check your Home Assistant URL in Settings.`);
+    }
   }
+
+  console.log(`[HA REST] Fetching: ${fullUrl}`);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(`${baseUrl}${endpointUrl}`, {
+    const res = await fetch(fullUrl, {
       headers: {
         "Authorization": `Bearer ${ha_token}`,
         "Content-Type": "application/json"
@@ -532,6 +542,7 @@ async function fetchHA(endpoint: string, timeoutMs = 30000) {
 
     if (!res.ok) {
       const errorText = await res.text();
+      console.error(`[HA REST] Error ${res.status}: ${errorText}`);
       throw new Error(`HA API Error (${res.status} ${res.statusText}) on ${endpointUrl}: ${errorText}`);
     }
     return res.json();
@@ -540,6 +551,7 @@ async function fetchHA(endpoint: string, timeoutMs = 30000) {
     if (err.name === 'AbortError') {
       throw new Error(`HA API Timeout (${timeoutMs/1000}s) on ${endpointUrl}. Check if your HA instance is reachable.`);
     }
+    console.error(`[HA REST] Fetch failed for ${fullUrl}:`, err.message);
     throw err;
   }
 }
@@ -1177,19 +1189,36 @@ app.post("/api/system/update", async (req, res) => {
   }
 });
 
+app.post("/api/ha/test-connection", async (req, res) => {
+  try {
+    const config = await fetchHA('/api/config');
+    if (config && config.version) {
+      res.json({ success: true, message: `Successfully connected to Home Assistant v${config.version}` });
+    } else {
+      res.status(500).json({ success: false, error: "Connected but received invalid configuration data." });
+    }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post("/api/ha/sync-automations-scripts", async (req, res) => {
   try {
-    console.log("Syncing automations and scripts from HA...");
+    console.log("[Sync] Syncing automations and scripts from HA...");
     const automations = await fetchHA('/api/states', 60000); // 60s timeout for full state dump
+    
     if (automations === null) {
+      console.error("[Sync] HA Connection not configured.");
       throw new Error("Home Assistant URL or Access Token is not configured in Settings.");
     }
+    
     if (!Array.isArray(automations)) {
+      console.error("[Sync] HA Response was not an array:", typeof automations);
       throw new Error("Failed to fetch states from HA: Response was not an array.");
     }
 
     const filtered = automations.filter((s: any) => s.entity_id && (s.entity_id.startsWith('automation.') || s.entity_id.startsWith('script.')));
-    console.log(`Found ${filtered.length} automations/scripts to sync.`);
+    console.log(`[Sync] Found ${filtered.length} automations/scripts to sync.`);
     
     const insertStmt = db.prepare("INSERT INTO ha_automations_scripts (entity_id, name, domain, content, last_updated) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(entity_id) DO UPDATE SET name=excluded.name, domain=excluded.domain, content=excluded.content, last_updated=datetime('now')");
     
@@ -1204,10 +1233,10 @@ app.post("/api/ha/sync-automations-scripts", async (req, res) => {
       }
     })();
 
-    console.log("Sync complete.");
+    console.log("[Sync] Sync complete.");
     res.json({ success: true, count: filtered.length });
   } catch (e: any) {
-    console.error("Sync automations/scripts error:", e.message);
+    console.error("[Sync] Error:", e.message);
     res.status(500).json({ error: e.message || "Unknown error during sync" });
   }
 });

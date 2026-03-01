@@ -89,6 +89,7 @@ export default function App() {
   const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
   const [isScanning, setIsScanning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
   const [scheduleViewMode, setScheduleViewMode] = useState<'calendar' | 'json'>('calendar');
@@ -463,6 +464,23 @@ export default function App() {
         }
       };
     });
+  };
+
+  const handleTestConnection = async () => {
+    setIsTestingConnection(true);
+    try {
+      const res = await fetch('/api/ha/test-connection', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message);
+      } else {
+        alert("Connection failed: " + data.error);
+      }
+    } catch (e: any) {
+      alert("Connection failed: " + e.message);
+    } finally {
+      setIsTestingConnection(false);
+    }
   };
 
   const handleGenerateSchedule = async () => {
@@ -1651,6 +1669,15 @@ export default function App() {
                         </div>
                         <div className="flex items-center gap-4 pt-2">
                           <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
+                          <Button 
+                            type="button" 
+                            variant="outline" 
+                            onClick={handleTestConnection}
+                            disabled={isTestingConnection}
+                          >
+                            {isTestingConnection ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                            Test Connection
+                          </Button>
                           <Button 
                             type="button" 
                             variant="outline" 
