@@ -612,10 +612,10 @@ async function runDailyAnalysis() {
   try {
     const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
     const lookbackDays = Number(getSetting("ai_lookback_days", "14"));
-    const apiKey = process.env.GEMINI_API_KEY || "";
+    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
     
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      const msg = "GEMINI_API_KEY is not configured.";
+      const msg = "Gemini API Key is not configured in settings.";
       console.error(msg);
       throw new Error(msg);
     }
@@ -779,10 +779,10 @@ async function executeRealTimeAIControl() {
   try {
     const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
     const contextWindowHours = Number(getSetting("ai_context_window_hours", "2"));
-    const apiKey = process.env.GEMINI_API_KEY || "";
+    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
     
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      console.warn("GEMINI_API_KEY is not configured. Skipping real-time control.");
+      console.warn("Gemini API Key is not configured in settings. Skipping real-time control.");
       return;
     }
     
@@ -1547,9 +1547,9 @@ app.get("/api/reasoning", (req, res) => {
 
 app.post("/api/ai/scan-entities", async (req, res) => {
   try {
-    const apiKey = process.env.GEMINI_API_KEY || "";
+    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      throw new Error("GEMINI_API_KEY is not configured.");
+      throw new Error("Gemini API Key is not configured in settings.");
     }
     const ai = new GoogleGenAI({ apiKey });
     
