@@ -94,6 +94,23 @@ db.exec(`
     attributes TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS ha_rules (
+    entity_id TEXT PRIMARY KEY,
+    name TEXT,
+    domain TEXT,
+    state TEXT,
+    attributes TEXT,
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS ha_automations_scripts (
+    entity_id TEXT PRIMARY KEY,
+    name TEXT,
+    domain TEXT,
+    content TEXT,
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Indexes for long-term vast data storage performance
   CREATE INDEX IF NOT EXISTS idx_device_history_entity_time ON device_history(entity_id, last_changed);
   CREATE INDEX IF NOT EXISTS idx_device_history_time ON device_history(last_changed);
@@ -570,6 +587,8 @@ async function runDailyAnalysis() {
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
     const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
 
+    const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
+
     const prompt = `
       You are an intelligent Home Assistant brain managing a complex multi-zone HVAC setup (scaling up to 7 zones) and lighting.
       Analyze the following smart home data from the last ${lookbackDays} days.
@@ -580,9 +599,11 @@ async function runDailyAnalysis() {
       3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones.
       4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
       5. Provide detailed reasoning for every schedule block.
+      6. LEARN FROM USER AUTOMATIONS: I have provided a list of your existing Home Assistant automations and scripts. Use these to understand how you group actions (e.g., "Night Mode", "Away Mode", "Arriving Home") and what triggers you typically use (e.g., sunrise, sunset, presence). This helps you align your generated schedules with your existing preferences.
       
       USER PROVIDED CONTEXT: "${userContext}"
       SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
+      USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       Tracked Devices: ${JSON.stringify(trackedRows)}
       Recent History (Last ${lookbackDays} Days): ${JSON.stringify(history.slice(-1000))}
       Logbook Events (Last ${lookbackDays} Days): ${JSON.stringify(logbook.slice(-500))}
@@ -755,6 +776,8 @@ async function executeRealTimeAIControl() {
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
     const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
 
+    const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
+
     const prompt = `
       You are the HomeBrain AI real-time controller and predictive trend-based inference engine.
       Analyze the current state and recent history to determine the home state and if actions are needed.
@@ -765,8 +788,10 @@ async function executeRealTimeAIControl() {
       INSTRUCTIONS:
       1. If the home state transitions to 'Sleep' or 'Away', you must output actions to proactively adjust the HVAC zone temperatures and turn off active lights.
       2. Analyze media_player, light, and binary_sensor (motion) entities alongside climate data to infer human behavior.
+      3. LEARN FROM USER AUTOMATIONS: Use the provided Home Assistant automations and scripts to understand user intent for various home states (e.g., what "Night Mode" means to this specific user).
       
       SYSTEM SNAPSHOT: ${JSON.stringify(systemSnapshot)}
+      USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       OCCUPANCY STATUS (People): ${JSON.stringify(occupancyRoster)}
       TRACKED DEVICES (General): ${JSON.stringify(trackedContext)}
       CURRENT STATES: ${JSON.stringify(trackedStates)}
@@ -1062,6 +1087,36 @@ app.post("/api/system/update", async (req, res) => {
   } catch (e: any) {
     console.error("Update failed:", e.message);
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/ha/sync-automations-scripts", async (req, res) => {
+  try {
+    console.log("Syncing automations and scripts from HA...");
+    const automations = await fetchHA('/api/states'); // We filter from states for domain automation/script
+    if (!automations || !Array.isArray(automations)) {
+      throw new Error("Failed to fetch states from HA");
+    }
+
+    const filtered = automations.filter((s: any) => s.entity_id.startsWith('automation.') || s.entity_id.startsWith('script.'));
+    
+    const insertStmt = db.prepare("INSERT INTO ha_automations_scripts (entity_id, name, domain, content, last_updated) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(entity_id) DO UPDATE SET name=excluded.name, domain=excluded.domain, content=excluded.content, last_updated=datetime('now')");
+    
+    db.transaction(() => {
+      for (const item of filtered) {
+        insertStmt.run(
+          item.entity_id,
+          item.attributes?.friendly_name || item.entity_id,
+          item.entity_id.split('.')[0],
+          JSON.stringify(item)
+        );
+      }
+    })();
+
+    res.json({ success: true, count: filtered.length });
+  } catch (e: any) {
+    console.error("Sync automations/scripts error", e);
+    res.status(500).json({ error: e.message });
   }
 });
 

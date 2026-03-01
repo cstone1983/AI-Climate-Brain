@@ -395,6 +395,21 @@ export default function App() {
     }
   };
 
+  const handleSyncAutomationsScripts = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/ha/sync-automations-scripts', { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to sync automations and scripts");
+      const data = await res.json();
+      alert(`Successfully synced ${data.count} automations and scripts for AI learning.`);
+    } catch (e: any) {
+      console.error("Sync failed", e);
+      alert("Sync failed: " + e.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const handleUpdateSingleSetting = async (key: string, value: string) => {
     const newSettings = { ...settings, [key]: value };
     setSettings(newSettings);
@@ -1225,6 +1240,30 @@ export default function App() {
                           />
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>AI Learning & Knowledge Base</CardTitle>
+                      <CardDescription>Pull in your existing Home Assistant logic to help the AI understand your preferences.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start space-x-3">
+                        <BrainCircuit className="w-5 h-5 text-indigo-600 mt-0.5" />
+                        <div className="text-sm text-indigo-900">
+                          <p className="font-medium">Automation & Script Sync</p>
+                          <p className="opacity-80">The AI will analyze your existing automations to learn how you group actions (e.g., "Night Mode", "Away Mode") and what events you care about. It won't execute these, but will use them to better align its generated schedules with your intent.</p>
+                        </div>
+                      </div>
+                      <Button 
+                        onClick={handleSyncAutomationsScripts} 
+                        disabled={isSyncing}
+                        className="w-full bg-indigo-600 text-white hover:bg-indigo-700"
+                      >
+                        {isSyncing ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                        Sync Automations & Scripts for AI Learning
+                      </Button>
                     </CardContent>
                   </Card>
 
