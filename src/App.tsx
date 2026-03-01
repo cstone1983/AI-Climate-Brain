@@ -26,7 +26,9 @@ import {
   Trash2,
   Scan,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  ArrowUpCircle,
+  Info
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -35,10 +37,9 @@ import { Label } from './components/ui/label';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ScheduleCalendar } from './components/ScheduleCalendar';
 
-import { GoogleGenAI, Type } from "@google/genai";
-
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [settingsTab, setSettingsTab] = useState('general');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [currentUser, setCurrentUser] = useState<{id: number, username: string, role: string} | null>(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
@@ -46,8 +47,20 @@ export default function App() {
   const [settings, setSettings] = useState({
     ha_url: '',
     ha_token: '',
+    gemini_api_key: '',
+    telegram_bot_token: '',
+    telegram_chat_id: '',
     user_ai_context: '',
-    dashboard_graph_zones: '[]'
+    dashboard_graph_zones: '[]',
+    ai_realtime_interval: '5',
+    ai_lookback_days: '14',
+    ai_context_window_hours: '2',
+    ai_model: 'gemini-3-flash-preview',
+    climate_abs_min: '55',
+    climate_abs_max: '80',
+    dashboard_default_timeframe: '24h',
+    ghost_mode_hvac: 'true',
+    ghost_mode_whole_home: 'true'
   });
 
   const [climateSettings, setClimateSettings] = useState({
@@ -68,6 +81,8 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [haStatus, setHaStatus] = useState('disconnected');
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [occupancyRoster, setOccupancyRoster] = useState<any[]>([]);
+  const [newOccupancy, setNewOccupancy] = useState({ name: '', entity_id: '' });
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'viewer' });
   const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, message: '', updating: false });
   const [deviceSearch, setDeviceSearch] = useState('');
@@ -75,6 +90,7 @@ export default function App() {
   const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
   const [isScanning, setIsScanning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
   const [scheduleViewMode, setScheduleViewMode] = useState<'calendar' | 'json'>('calendar');
 
@@ -87,6 +103,7 @@ export default function App() {
       fetchReasoning();
       fetchEntities();
       fetchHaStatus();
+      fetchOccupancy();
       if (currentUser.role === 'admin') {
         fetchUsers();
       }
@@ -108,6 +125,13 @@ export default function App() {
           fetchSchedules();
         } else if (message.type === 'HA_STATUS') {
           setHaStatus(message.status);
+        } else if (message.type === 'SYNC_PROGRESS') {
+          setIsSyncing(true);
+          setSyncProgress({ progress: message.progress, entity: message.entity });
+        } else if (message.type === 'SYNC_COMPLETE') {
+          setIsSyncing(false);
+          setSyncProgress({ progress: 100, entity: 'Complete' });
+          fetchHistory();
         }
       };
       
@@ -149,6 +173,29 @@ export default function App() {
     setUsersList(data);
   };
 
+  const fetchOccupancy = async () => {
+    const res = await fetch('/api/occupancy');
+    const data = await res.json();
+    setOccupancyRoster(data);
+  };
+
+  const handleAddOccupancy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newOccupancy.name || !newOccupancy.entity_id) return;
+    await fetch('/api/occupancy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newOccupancy)
+    });
+    setNewOccupancy({ name: '', entity_id: '' });
+    fetchOccupancy();
+  };
+
+  const handleDeleteOccupancy = async (id: number) => {
+    await fetch(`/api/occupancy/${id}`, { method: 'DELETE' });
+    fetchOccupancy();
+  };
+
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     await fetch('/api/users', {
@@ -168,7 +215,10 @@ export default function App() {
   const fetchSettings = async () => {
     const res = await fetch('/api/settings');
     const data = await res.json();
-    setSettings(data);
+    setSettings(prev => ({ ...prev, ...data }));
+    if (data.dashboard_default_timeframe) {
+      setGraphTimeframe(data.dashboard_default_timeframe);
+    }
     setClimateSettings({
       master_home: Number(data.climate_master_home) || 72,
       master_away: Number(data.climate_master_away) || 65,
@@ -229,103 +279,29 @@ export default function App() {
   };
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      executeRealTimeAIControl();
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [settings]);
+    // Background loops are now handled by the server.
+    // This frontend loop is removed.
+  }, []);
 
   const executeRealTimeAIControl = async () => {
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) return;
-      const ai = new GoogleGenAI({ apiKey });
-
-      const ghostModeHvac = settings.ghost_mode_hvac !== 'false';
-      const ghostModeWholeHome = settings.ghost_mode_whole_home !== 'false';
-
-      const res = await fetch('/api/ai/real-time-context');
-      const data = await res.json();
-      if (!data.trackedContext || data.trackedContext.length === 0) return;
-
-      const prompt = `
-        You are the HomeBrain AI real-time controller.
-        Analyze the current state and recent history to determine if actions are needed.
-        
-        SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(data.systemSnapshot)}
-        Tracked Devices: ${JSON.stringify(data.trackedContext)}
-        Current States: ${JSON.stringify(data.trackedStates)}
-        Recent History: ${JSON.stringify(data.recentHistory)}
-        
-        Return a JSON object with:
-        { "actions": [{ "type": "hvac"|"whole_home", "domain": "...", "service": "...", "entity_id": "...", "service_data": {...}, "reasoning": "..." }] }
-      `;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: { 
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              actions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    type: { type: Type.STRING },
-                    domain: { type: Type.STRING },
-                    service: { type: Type.STRING },
-                    entity_id: { type: Type.STRING },
-                    service_data: { type: Type.OBJECT },
-                    reasoning: { type: Type.STRING }
-                  },
-                  required: ["type", "domain", "service", "entity_id", "reasoning"]
-                }
-              }
-            },
-            required: ["actions"]
-          }
-        }
-      });
-
-      const result = JSON.parse(response.text || "{}");
-      if (result.actions && Array.isArray(result.actions)) {
-        for (const action of result.actions) {
-          let ghostModeActive = false;
-          if (action.type === 'hvac' && ghostModeHvac) ghostModeActive = true;
-          if (action.type === 'whole_home' && ghostModeWholeHome) ghostModeActive = true;
-
-          if (!ghostModeActive) {
-            await fetch('/api/ha/call-service', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                domain: action.domain,
-                service: action.service,
-                serviceData: { entity_id: action.entity_id, ...action.service_data }
-              })
-            });
-          }
-
-          const finalReasoning = ghostModeActive ? `[GHOST MODE - ACTION BLOCKED] ${action.reasoning}` : `[EXECUTED] ${action.reasoning}`;
-          const decisionText = `${action.service} on ${action.entity_id} ${action.service_data ? JSON.stringify(action.service_data) : ''}`;
-          
-          await fetch('/api/ai/save-reasoning', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              context: action.type === 'hvac' ? 'Real-time HVAC Control' : 'Real-time Whole Home Control',
-              decision: decisionText,
-              reasoning: finalReasoning
-            })
-          });
-        }
-        if (result.actions.length > 0) fetchReasoning();
-      }
+      const res = await fetch('/api/ai/real-time-control', { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to trigger real-time control");
+      fetchReasoning();
     } catch (e) {
       console.error("Real-time control failed", e);
+    }
+  };
+
+  const handleHistorySync = async () => {
+    setIsSyncing(true);
+    setSyncProgress({ progress: 0, entity: 'Starting...' });
+    try {
+      const res = await fetch('/api/ha/sync-history', { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to start history sync");
+    } catch (e) {
+      console.error("History sync failed", e);
+      setIsSyncing(false);
     }
   };
 
@@ -333,53 +309,9 @@ export default function App() {
     setIsScanning(true);
     setScanResults([]);
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not defined");
-      }
-      const ai = new GoogleGenAI({ apiKey });
-      
-      const res = await fetch('/api/ha/entities');
-      const data = await res.json();
-      if (!data.entities || !Array.isArray(data.entities)) {
-        throw new Error("Could not fetch entities from Home Assistant");
-      }
-
-      const entityList = data.entities.map((e: any) => ({
-        entity_id: e.entity_id,
-        friendly_name: e.friendly_name,
-        domain: e.domain
-      }));
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system. 
-        Focus on:
-        1. Climate/Thermostat entities.
-        2. Temperature/Humidity sensors.
-        3. Presence/Occupancy sensors (person, device_tracker, binary_sensor.motion).
-        4. Main lights or switches that indicate occupancy or activity.
-        
-        Return a JSON array of objects with 'entity_id' and a brief 'reason' why it should be tracked.
-        
-        Entities: ${JSON.stringify(entityList.slice(0, 300))} (truncated if too many)`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                entity_id: { type: Type.STRING },
-                reason: { type: Type.STRING }
-              },
-              required: ["entity_id", "reason"]
-            }
-          }
-        }
-      });
-
-      const suggestions = JSON.parse(response.text || "[]");
+      const res = await fetch('/api/ai/scan-entities', { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to scan entities via AI");
+      const suggestions = await res.json();
       if (Array.isArray(suggestions)) {
         setScanResults(suggestions);
       } else {
@@ -499,96 +431,11 @@ export default function App() {
   const handleGenerateSchedule = async () => {
     setIsGenerating(true);
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("GEMINI_API_KEY is not defined");
-      const ai = new GoogleGenAI({ apiKey });
-
-      const contextRes = await fetch('/api/ai/analysis-context');
-      const context = await contextRes.json();
-
-      const prompt = `
-        You are an intelligent Home Assistant brain managing a complex multi-zone HVAC setup (scaling up to 7 zones) and lighting.
-        Analyze the following smart home data from the last 14 days.
-        
-        CRITICAL GOALS:
-        1. Generate a rolling 14-day schedule.
-        2. Infer custody schedules (alternating weeks/days) based on presence patterns in the 14-day history.
-        3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones.
-        4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
-        5. Provide detailed reasoning for every schedule block.
-        
-        USER PROVIDED CONTEXT: "${context.userContext}"
-        SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(context.systemSnapshot)}
-        Tracked Devices: ${JSON.stringify(context.trackedEntities)}
-        Recent History (Last 14 Days): ${JSON.stringify(context.history)}
-        
-        Return a JSON object with:
-        {
-          "insights": ["insight 1", ...],
-          "reasoning": [{ "context": "...", "decision": "...", "reasoning": "..." }],
-          "schedule": { "name": "...", "description": "...", "schedule_data": [...] }
-        }
-      `;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: { 
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              insights: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              },
-              reasoning: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    context: { type: Type.STRING },
-                    decision: { type: Type.STRING },
-                    reasoning: { type: Type.STRING }
-                  },
-                  required: ["context", "decision", "reasoning"]
-                }
-              },
-              schedule: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  schedule_data: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        day: { type: Type.STRING },
-                        time: { type: Type.STRING },
-                        entity_id: { type: Type.STRING },
-                        state: { type: Type.STRING },
-                        reasoning: { type: Type.STRING }
-                      },
-                      required: ["day", "time", "entity_id", "state"]
-                    }
-                  }
-                },
-                required: ["name", "schedule_data"]
-              }
-            },
-            required: ["insights", "reasoning", "schedule"]
-          }
-        }
-      });
-
-      const result = JSON.parse(response.text || "{}");
-      
-      await fetch('/api/ai/save-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(result)
-      });
+      const res = await fetch('/api/ai/generate-schedule', { method: 'POST' });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to generate schedule via AI");
+      }
       
       fetchInsights();
       fetchReasoning();
@@ -701,31 +548,33 @@ export default function App() {
   const graphZones = JSON.parse(settings.dashboard_graph_zones || '[]');
   const chartDataMap: Record<string, any> = {};
   
-  graphData.forEach(item => {
-    if (graphZones.includes(item.entity_id)) {
-      const date = new Date(item.last_changed + 'Z');
-      
-      let timeKey = '';
-      if (graphTimeframe === '24h') {
-        timeKey = `${date.getHours().toString().padStart(2, '0')}:00`;
-      } else if (graphTimeframe === '7d' || graphTimeframe === '30d') {
-        timeKey = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:00`;
-      } else {
-        timeKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
-      }
-      
-      if (!chartDataMap[timeKey]) {
-        chartDataMap[timeKey] = { time: timeKey, timestamp: date.getTime() };
-      }
-      
-      try {
-        const attrs = JSON.parse(item.attributes);
-        if (attrs.current_temperature) {
-          chartDataMap[timeKey][item.entity_id] = attrs.current_temperature;
+    graphData.forEach(item => {
+      if (graphZones.includes(item.entity_id)) {
+        // Handle both normalized and ISO timestamps
+        const tsStr = item.last_changed.includes('T') || item.last_changed.includes('+') || item.last_changed.includes('Z') 
+          ? item.last_changed 
+          : item.last_changed + 'Z';
+        const date = new Date(tsStr);
+        const timeKey = item.last_changed; // Use unique timestamp to avoid aggregation
+        
+        if (!chartDataMap[timeKey]) {
+          chartDataMap[timeKey] = { time: timeKey, timestamp: date.getTime() };
         }
-      } catch(e) {}
-    }
-  });
+        
+        try {
+          const attrs = JSON.parse(item.attributes);
+          // 1. Try current_temperature (climate)
+          // 2. Try state (sensor)
+          const temp = attrs.current_temperature !== undefined 
+            ? Number(attrs.current_temperature) 
+            : Number(item.state);
+            
+          if (!isNaN(temp)) {
+            chartDataMap[timeKey][item.entity_id] = temp;
+          }
+        } catch(e) {}
+      }
+    });
   
   const chartData = Object.values(chartDataMap).sort((a: any, b: any) => a.timestamp - b.timestamp);
   if (chartData.length === 0) {
@@ -755,6 +604,7 @@ export default function App() {
         <nav className="flex-1 py-6 space-y-1 px-3">
           {[
             { id: 'dashboard', icon: Home, label: 'Dashboard' },
+            { id: 'occupancy', icon: Users, label: 'Occupancy' },
             { id: 'climate', icon: ThermometerSun, label: 'Master Climate' },
             { id: 'history', icon: Activity, label: 'History & Data' },
             { id: 'schedules', icon: Calendar, label: 'AI Schedules' },
@@ -863,9 +713,23 @@ export default function App() {
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                        <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} domain={['dataMin - 2', 'dataMax + 2']} />
+                        <XAxis 
+                          dataKey="timestamp" 
+                          type="number"
+                          domain={['dataMin', 'dataMax']}
+                          stroke="#64748b" 
+                          fontSize={10} 
+                          tickLine={false} 
+                          axisLine={false}
+                          tickFormatter={(ts) => {
+                            const d = new Date(ts);
+                            if (graphTimeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                            return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`;
+                          }}
+                        />
+                        <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} domain={['auto', 'auto']} />
                         <Tooltip 
+                          labelFormatter={(ts) => new Date(ts).toLocaleString()}
                           contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                         />
                         {graphZones.map((zoneId: string, idx: number) => (
@@ -876,7 +740,8 @@ export default function App() {
                             name={entities.find(e => e.entity_id === zoneId)?.friendly_name || zoneId}
                             stroke={colors[idx % colors.length]} 
                             strokeWidth={2} 
-                            dot={false} 
+                            dot={false}
+                            connectNulls={true}
                           />
                         ))}
                       </LineChart>
@@ -899,6 +764,101 @@ export default function App() {
                       )) : (
                         <div className="text-sm text-slate-500 text-center py-4">No insights generated yet. Run the daily analysis.</div>
                       )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'occupancy' && (
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-lg font-semibold">Occupancy Roster</h2>
+                  <p className="text-sm text-slate-500">Manage people and their Home Assistant tracker entities.</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <Card className="lg:col-span-1">
+                  <CardHeader>
+                    <CardTitle>Add Person</CardTitle>
+                    <CardDescription>Link a name to a tracker entity</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleAddOccupancy} className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Name</Label>
+                        <Input 
+                          placeholder="e.g. John Doe"
+                          value={newOccupancy.name}
+                          onChange={e => setNewOccupancy({...newOccupancy, name: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>HA Entity ID</Label>
+                        <select 
+                          className="w-full h-10 px-3 py-2 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+                          value={newOccupancy.entity_id}
+                          onChange={e => setNewOccupancy({...newOccupancy, entity_id: e.target.value})}
+                        >
+                          <option value="">Select a tracker...</option>
+                          {entities
+                            .filter(e => e.domain === 'person' || e.domain === 'device_tracker')
+                            .sort((a, b) => (a.friendly_name || a.entity_id).localeCompare(b.friendly_name || b.entity_id))
+                            .map(entity => (
+                              <option key={entity.entity_id} value={entity.entity_id}>
+                                {entity.friendly_name || entity.entity_id} ({entity.entity_id})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                      <Button type="submit" className="w-full bg-slate-900 text-white">Add to Roster</Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle>Current Roster</CardTitle>
+                    <CardDescription>Tracked individuals and their current status</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-left">
+                        <thead className="text-xs text-slate-500 uppercase bg-slate-50">
+                          <tr>
+                            <th className="px-4 py-3">Name</th>
+                            <th className="px-4 py-3">Entity ID</th>
+                            <th className="px-4 py-3">Status</th>
+                            <th className="px-4 py-3 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {occupancyRoster.map(person => (
+                            <tr key={person.id} className="hover:bg-slate-50/50">
+                              <td className="px-4 py-3 font-medium">{person.name}</td>
+                              <td className="px-4 py-3 font-mono text-xs text-slate-500">{person.entity_id}</td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${person.status === 'home' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                  {person.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <Button variant="ghost" size="icon" onClick={() => handleDeleteOccupancy(person.id)} className="text-rose-500 hover:text-rose-700 hover:bg-rose-50">
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                          {occupancyRoster.length === 0 && (
+                            <tr>
+                              <td colSpan={4} className="px-4 py-8 text-center text-slate-500">No one in the roster yet.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   </CardContent>
                 </Card>
@@ -1153,7 +1113,24 @@ export default function App() {
 
           {activeTab === 'settings' && (
             <div className="max-w-4xl space-y-6">
-              {currentUser.role === 'admin' && (
+              <div className="flex space-x-4 border-b border-slate-200 pb-2">
+                <button 
+                  onClick={() => setSettingsTab('general')}
+                  className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'general' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  General Settings
+                </button>
+                {currentUser.role === 'admin' && (
+                  <button 
+                    onClick={() => setSettingsTab('api_keys')}
+                    className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'api_keys' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    API Keys & Logins
+                  </button>
+                )}
+              </div>
+
+              {settingsTab === 'general' && currentUser.role === 'admin' && (
                 <>
                   <Card>
                     <CardHeader>
@@ -1187,6 +1164,122 @@ export default function App() {
                           <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
                         </div>
                       </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>AI Engine Tuning</CardTitle>
+                      <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="ai_model">Gemini Model Selection</Label>
+                          <select 
+                            id="ai_model"
+                            className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                            value={settings.ai_model}
+                            onChange={e => setSettings({...settings, ai_model: e.target.value})}
+                          >
+                            <option value="gemini-3-flash-preview">Gemini 3 Flash (Fast & Efficient)</option>
+                            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Advanced Reasoning)</option>
+                            <option value="gemini-2.5-flash-latest">Gemini 2.5 Flash (Legacy)</option>
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>
+                          <div className="flex items-center gap-4">
+                            <Input 
+                              id="ai_realtime_interval" 
+                              type="number" 
+                              min="1" 
+                              max="60"
+                              value={settings.ai_realtime_interval}
+                              onChange={e => setSettings({...settings, ai_realtime_interval: e.target.value})}
+                            />
+                            <span className="text-xs text-slate-500 whitespace-nowrap">Every {settings.ai_realtime_interval} mins</span>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="ai_lookback_days">Lookback Window (Days: 7-30)</Label>
+                          <div className="flex items-center gap-4">
+                            <Input 
+                              id="ai_lookback_days" 
+                              type="number" 
+                              min="7" 
+                              max="30"
+                              value={settings.ai_lookback_days}
+                              onChange={e => setSettings({...settings, ai_lookback_days: e.target.value})}
+                            />
+                            <span className="text-xs text-slate-500 whitespace-nowrap">{settings.ai_lookback_days} days of history</span>
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Climate Guardrails</CardTitle>
+                      <CardDescription>Safety limits for AI-driven temperature adjustments.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="climate_abs_min">Absolute Minimum Temperature (°F)</Label>
+                          <Input 
+                            id="climate_abs_min" 
+                            type="number" 
+                            value={settings.climate_abs_min}
+                            onChange={e => setSettings({...settings, climate_abs_min: e.target.value})}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="climate_abs_max">Absolute Maximum Temperature (°F)</Label>
+                          <Input 
+                            id="climate_abs_max" 
+                            type="number" 
+                            value={settings.climate_abs_max}
+                            onChange={e => setSettings({...settings, climate_abs_max: e.target.value})}
+                          />
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Data Management</CardTitle>
+                      <CardDescription>Configure how data is synchronized and displayed.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="ai_context_window_hours">Context Sync Window (Hours: 1-24)</Label>
+                          <Input 
+                            id="ai_context_window_hours" 
+                            type="number" 
+                            min="1" 
+                            max="24"
+                            value={settings.ai_context_window_hours}
+                            onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="dashboard_default_timeframe">Graph Default Timeframe</Label>
+                          <select 
+                            id="dashboard_default_timeframe"
+                            className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                            value={settings.dashboard_default_timeframe}
+                            onChange={e => setSettings({...settings, dashboard_default_timeframe: e.target.value})}
+                          >
+                            <option value="24h">Last 24 Hours</option>
+                            <option value="7d">Last 7 Days</option>
+                            <option value="30d">Last 30 Days</option>
+                          </select>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
 
@@ -1335,26 +1428,119 @@ export default function App() {
 
                   <Card>
                     <CardHeader>
-                      <CardTitle>System Updates</CardTitle>
-                      <CardDescription>Check for and apply updates from the GitHub repository.</CardDescription>
+                      <CardTitle>System Updates & Maintenance</CardTitle>
+                      <CardDescription>
+                        Check for application updates and verify system integrity. 
+                        Note: Database data is stored in a persistent volume and is NOT overwritten during system updates.
+                      </CardDescription>
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-4">
-                        <div className="flex items-center gap-4">
-                          <Button onClick={handleCheckUpdate} disabled={updateStatus.checking || updateStatus.updating} variant="outline">
-                            {updateStatus.checking ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                            Check for Updates
-                          </Button>
-                          {updateStatus.available && (
-                            <Button onClick={handleApplyUpdate} disabled={updateStatus.updating} className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                              {updateStatus.updating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : null}
-                              {updateStatus.updating ? 'Updating...' : 'Apply Update'}
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium">Application Version</p>
+                            <p className="text-xs text-slate-500">Current Version: v1.0.4 (Stable)</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button 
+                              onClick={handleCheckUpdate} 
+                              disabled={updateStatus.checking || updateStatus.updating} 
+                              variant="outline"
+                              className="border-slate-200"
+                            >
+                              {updateStatus.checking ? (
+                                <>
+                                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                                  Checking...
+                                </>
+                              ) : (
+                                <>
+                                  <ArrowUpCircle className="w-4 h-4 mr-2" />
+                                  Check for Updates
+                                </>
+                              )}
                             </Button>
-                          )}
+                            {updateStatus.available && (
+                              <Button 
+                                onClick={handleApplyUpdate} 
+                                disabled={updateStatus.updating} 
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                              >
+                                {updateStatus.updating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : null}
+                                {updateStatus.updating ? 'Updating...' : 'Apply Update'}
+                              </Button>
+                            )}
+                          </div>
                         </div>
+                        
                         {updateStatus.message && (
-                          <div className={`p-3 rounded-lg text-sm ${updateStatus.available ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
-                            {updateStatus.message}
+                          <div className={`p-3 rounded-lg text-sm flex items-start gap-3 ${updateStatus.available ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
+                            <Info className="w-4 h-4 text-indigo-600 mt-0.5" />
+                            <p className="text-xs">{updateStatus.message}</p>
+                          </div>
+                        )}
+
+                        <div className="pt-4 border-t border-slate-100">
+                          <div className="flex items-center gap-2 text-xs text-emerald-600 font-medium">
+                            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                            Database Persistent Storage: Active
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            Your local SQLite database (home_brain.db) is excluded from build overwrites and will persist across all application updates, including redeployments via the AI Studio Update button.
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Historical Data Sync</CardTitle>
+                      <CardDescription>
+                        Perform a phased pull of historical data from Home Assistant. 
+                        This is done in a "slow staged" way (500ms delay per entity) to avoid overloading your Home Assistant instance.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium">Phased History Pull</p>
+                            <p className="text-xs text-slate-500">
+                              Pull the last {settings.ai_lookback_days} days of history for all tracked entities.
+                            </p>
+                          </div>
+                          <Button 
+                            onClick={handleHistorySync} 
+                            disabled={isSyncing}
+                            className={isSyncing ? "bg-slate-100 text-slate-400" : "bg-indigo-600 text-white hover:bg-indigo-700"}
+                          >
+                            {isSyncing ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                                Syncing...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="w-4 h-4 mr-2" />
+                                Start Phased Sync
+                              </>
+                            )}
+                          </Button>
+                        </div>
+
+                        {isSyncing && (
+                          <div className="space-y-2">
+                            <div className="flex justify-between text-xs font-medium text-slate-500">
+                              <span>{syncProgress.entity}</span>
+                              <span>{syncProgress.progress}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                              <div 
+                                className="bg-indigo-600 h-full transition-all duration-500" 
+                                style={{ width: `${syncProgress.progress}%` }}
+                              ></div>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1390,6 +1576,105 @@ export default function App() {
                           )}
                         </Button>
                       </div>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
+
+              {settingsTab === 'api_keys' && currentUser.role === 'admin' && (
+                <>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Home Assistant Connection</CardTitle>
+                      <CardDescription>Configure your connection to Home Assistant.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="ha_url">Home Assistant URL</Label>
+                            <Input 
+                              id="ha_url" 
+                              placeholder="http://homeassistant.local:8123" 
+                              value={settings.ha_url}
+                              onChange={e => setSettings({...settings, ha_url: e.target.value})}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ha_token">Long-Lived Access Token</Label>
+                            <Input 
+                              id="ha_token" 
+                              type="password" 
+                              value={settings.ha_token}
+                              onChange={e => setSettings({...settings, ha_token: e.target.value})}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
+                          <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
+                        </div>
+                      </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Gemini API</CardTitle>
+                      <CardDescription>Configure your Gemini API key for AI features.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="gemini_api_key">Gemini API Key</Label>
+                          <Input 
+                            id="gemini_api_key" 
+                            type="password" 
+                            placeholder="AIzaSy..." 
+                            value={settings.gemini_api_key}
+                            onChange={e => setSettings({...settings, gemini_api_key: e.target.value})}
+                          />
+                        </div>
+                        <div className="flex items-center gap-4 pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Key</Button>
+                        </div>
+                      </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Telegram Notifications</CardTitle>
+                      <CardDescription>Configure Telegram for alerts and notifications.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="telegram_bot_token">Bot Token</Label>
+                            <Input 
+                              id="telegram_bot_token" 
+                              type="password" 
+                              placeholder="123456789:ABCdef..." 
+                              value={settings.telegram_bot_token}
+                              onChange={e => setSettings({...settings, telegram_bot_token: e.target.value})}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="telegram_chat_id">Chat ID</Label>
+                            <Input 
+                              id="telegram_chat_id" 
+                              type="text" 
+                              placeholder="-1001234567890" 
+                              value={settings.telegram_chat_id}
+                              onChange={e => setSettings({...settings, telegram_chat_id: e.target.value})}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Telegram Settings</Button>
+                        </div>
+                      </form>
                     </CardContent>
                   </Card>
                 </>
