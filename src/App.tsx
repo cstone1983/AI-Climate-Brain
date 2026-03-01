@@ -384,8 +384,15 @@ export default function App() {
     setIsSyncing(true);
     try {
       const res = await fetch('/api/ha/sync-system-data', { method: 'POST' });
-      if (!res.ok) throw new Error("Failed to sync system data");
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        if (!res.ok) throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
+      }
+      if (!res.ok) throw new Error(data.error || "Failed to sync system data");
       alert(data.message || "System data synced successfully!");
     } catch (e: any) {
       console.error("Sync failed", e);
@@ -399,7 +406,14 @@ export default function App() {
     setIsSyncing(true);
     try {
       const res = await fetch('/api/ha/sync-automations-scripts', { method: 'POST' });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        if (!res.ok) throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
+      }
       if (!res.ok) throw new Error(data.error || "Failed to sync automations and scripts");
       alert(`Successfully synced ${data.count} automations and scripts for AI learning.`);
     } catch (e: any) {

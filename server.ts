@@ -500,7 +500,7 @@ function connectToHA() {
 }
 
 // --- HA REST API Helper ---
-async function fetchHA(endpoint: string) {
+async function fetchHA(endpoint: string, timeoutMs = 30000) {
   const settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
   const settings: Record<string, string> = {};
   for (const row of settingsRows) {
@@ -518,7 +518,7 @@ async function fetchHA(endpoint: string) {
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(`${baseUrl}${endpointUrl}`, {
@@ -538,7 +538,7 @@ async function fetchHA(endpoint: string) {
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-      throw new Error(`HA API Timeout (10s) on ${endpointUrl}. Check if your HA instance is reachable.`);
+      throw new Error(`HA API Timeout (${timeoutMs/1000}s) on ${endpointUrl}. Check if your HA instance is reachable.`);
     }
     throw err;
   }
@@ -1180,7 +1180,7 @@ app.post("/api/system/update", async (req, res) => {
 app.post("/api/ha/sync-automations-scripts", async (req, res) => {
   try {
     console.log("Syncing automations and scripts from HA...");
-    const automations = await fetchHA('/api/states'); 
+    const automations = await fetchHA('/api/states', 60000); // 60s timeout for full state dump
     if (automations === null) {
       throw new Error("Home Assistant URL or Access Token is not configured in Settings.");
     }
@@ -1188,7 +1188,8 @@ app.post("/api/ha/sync-automations-scripts", async (req, res) => {
       throw new Error("Failed to fetch states from HA: Response was not an array.");
     }
 
-    const filtered = automations.filter((s: any) => s.entity_id.startsWith('automation.') || s.entity_id.startsWith('script.'));
+    const filtered = automations.filter((s: any) => s.entity_id && (s.entity_id.startsWith('automation.') || s.entity_id.startsWith('script.')));
+    console.log(`Found ${filtered.length} automations/scripts to sync.`);
     
     const insertStmt = db.prepare("INSERT INTO ha_automations_scripts (entity_id, name, domain, content, last_updated) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(entity_id) DO UPDATE SET name=excluded.name, domain=excluded.domain, content=excluded.content, last_updated=datetime('now')");
     
@@ -1203,10 +1204,11 @@ app.post("/api/ha/sync-automations-scripts", async (req, res) => {
       }
     })();
 
+    console.log("Sync complete.");
     res.json({ success: true, count: filtered.length });
   } catch (e: any) {
-    console.error("Sync automations/scripts error", e);
-    res.status(500).json({ error: e.message });
+    console.error("Sync automations/scripts error:", e.message);
+    res.status(500).json({ error: e.message || "Unknown error during sync" });
   }
 });
 
