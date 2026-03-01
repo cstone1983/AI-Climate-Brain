@@ -1646,6 +1646,33 @@ export default function App() {
                 <>
                   <Card>
                     <CardHeader>
+                      <CardTitle>Gemini API Key</CardTitle>
+                      <CardDescription>Configure your Google Gemini API key for AI features.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="gemini_api_key">API Key</Label>
+                            <Input 
+                              id="gemini_api_key" 
+                              type="password" 
+                              autoComplete="new-password"
+                              placeholder="AIzaSy..." 
+                              value={settings.gemini_api_key || ''}
+                              onChange={e => setSettings({...settings, gemini_api_key: e.target.value})}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Gemini Key</Button>
+                        </div>
+                      </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
                       <CardTitle>Home Assistant Connection</CardTitle>
                       <CardDescription>Configure your connection to Home Assistant.</CardDescription>
                     </CardHeader>
