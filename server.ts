@@ -140,11 +140,13 @@ function broadcastToFrontend(message: any) {
 let haWs: WebSocket | null = null;
 let haMessageId = 1;
 let haStatus = 'disconnected';
+let haError = '';
 let haReconnectTimeout: NodeJS.Timeout | null = null;
 
-function setHaStatus(status: string) {
+function setHaStatus(status: string, error = '') {
   haStatus = status;
-  broadcastToFrontend({ type: 'HA_STATUS', status });
+  haError = error;
+  broadcastToFrontend({ type: 'HA_STATUS', status, error });
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -260,12 +262,43 @@ function connectToHA() {
   const ha_url = settings["ha_url"];
   const ha_token = settings["ha_token"];
   if (!ha_url || !ha_token) {
-    setHaStatus('disconnected');
+    setHaStatus('disconnected', 'Missing HA URL or Token');
+    return;
+  }
+
+  if (!ha_url.startsWith('http')) {
+    setHaStatus('disconnected', 'URL must start with http:// or https://');
     return;
   }
 
   const baseUrl = ha_url.endsWith('/') ? ha_url.slice(0, -1) : ha_url;
+  
+  // Check for local addresses if in cloud environment
+  const isLocal = baseUrl.includes('.local') || 
+                  baseUrl.includes('192.168.') || 
+                  baseUrl.includes('10.') || 
+                  baseUrl.includes('172.16.') || 
+                  baseUrl.includes('172.17.') || 
+                  baseUrl.includes('172.18.') || 
+                  baseUrl.includes('172.19.') || 
+                  baseUrl.includes('172.20.') || 
+                  baseUrl.includes('172.21.') || 
+                  baseUrl.includes('172.22.') || 
+                  baseUrl.includes('172.23.') || 
+                  baseUrl.includes('172.24.') || 
+                  baseUrl.includes('172.25.') || 
+                  baseUrl.includes('172.26.') || 
+                  baseUrl.includes('172.27.') || 
+                  baseUrl.includes('172.28.') || 
+                  baseUrl.includes('172.29.') || 
+                  baseUrl.includes('172.30.') || 
+                  baseUrl.includes('172.31.') ||
+                  baseUrl.includes('localhost') ||
+                  baseUrl.includes('127.0.0.1');
+
   const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/websocket';
+  
+  console.log(`Attempting to connect to HA at: ${wsUrl}`);
   
   if (haWs) {
     haWs.removeAllListeners();
@@ -290,7 +323,7 @@ function connectToHA() {
         haWs?.send(JSON.stringify({ id: haMessageId++, type: 'subscribe_events', event_type: 'state_changed' }));
         fillHistoryGaps();
       } else if (msg.type === 'auth_invalid') {
-        setHaStatus('disconnected');
+        setHaStatus('disconnected', 'Invalid Access Token');
         console.error('HA WS Auth Invalid');
       } else if (msg.type === 'event' && msg.event?.event_type === 'state_changed') {
         const entity_id = msg.event.data.entity_id;
@@ -321,12 +354,17 @@ function connectToHA() {
 
     haWs.on('error', (err) => {
       console.error('HA WS Error:', err.message);
-      setHaStatus('disconnected');
+      let errorMsg = err.message;
+      if (errorMsg.includes('ENOTFOUND')) errorMsg = 'Address not found (DNS failure)';
+      else if (errorMsg.includes('ECONNREFUSED')) errorMsg = 'Connection refused (Check port/firewall)';
+      else if (errorMsg.includes('ETIMEDOUT')) errorMsg = 'Connection timed out';
+      
+      setHaStatus('disconnected', errorMsg);
     });
 
-    haWs.on('close', () => {
-      console.log('HA WS Closed. Reconnecting in 5s...');
-      setHaStatus('disconnected');
+    haWs.on('close', (code, reason) => {
+      console.log(`HA WS Closed (Code: ${code}, Reason: ${reason}). Reconnecting in 5s...`);
+      setHaStatus('disconnected', reason.toString() || `Closed with code ${code}`);
       if (!haReconnectTimeout) {
         haReconnectTimeout = setTimeout(connectToHA, 5000);
       }
@@ -844,7 +882,7 @@ app.delete("/api/occupancy/:id", (req, res) => {
 });
 
 app.get("/api/ha/status", (req, res) => {
-  res.json({ status: haStatus });
+  res.json({ status: haStatus, error: haError });
 });
 
 app.post("/api/ha/force-connect", (req, res) => {
