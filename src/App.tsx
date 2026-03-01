@@ -78,7 +78,7 @@ export default function App() {
   const [entities, setEntities] = useState<any[]>([]);
   const [trackedEntities, setTrackedEntities] = useState<Record<string, { tracked: boolean, notes: string }>>({});
   const [isGenerating, setIsGenerating] = useState(false);
-  const [haStatus, setHaStatus] = useState('disconnected');
+  const [haStatus, setHaStatus] = useState({ status: 'disconnected', error: '' });
   const [usersList, setUsersList] = useState<any[]>([]);
   const [occupancyRoster, setOccupancyRoster] = useState<any[]>([]);
   const [newOccupancy, setNewOccupancy] = useState({ name: '', entity_id: '' });
@@ -157,11 +157,11 @@ export default function App() {
   const fetchHaStatus = async () => {
     const res = await fetch('/api/ha/status');
     const data = await res.json();
-    setHaStatus(data.status);
+    setHaStatus({ status: data.status, error: data.error || '' });
   };
 
   const handleForceConnect = async () => {
-    setHaStatus('connecting');
+    setHaStatus({ status: 'connecting', error: '' });
     await fetch('/api/ha/force-connect', { method: 'POST' });
     fetchHaStatus();
   };
@@ -653,9 +653,16 @@ export default function App() {
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10">
           <h1 className="text-xl font-medium tracking-tight text-slate-800 capitalize">{activeTab.replace('-', ' ')}</h1>
           <div className="flex items-center gap-4">
-            <div className={`flex items-center px-3 py-1.5 rounded-full text-xs font-medium border ${haStatus === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : haStatus === 'connecting' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
-              {haStatus === 'connected' ? <Wifi className="w-3.5 h-3.5 mr-1.5" /> : <WifiOff className="w-3.5 h-3.5 mr-1.5" />}
-              {haStatus === 'connected' ? 'HA Connected' : haStatus === 'connecting' ? 'Connecting...' : 'HA Disconnected'}
+            <div className={`flex flex-col items-end`}>
+              <div className={`flex items-center px-3 py-1.5 rounded-full text-xs font-medium border ${haStatus.status === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : haStatus.status === 'connecting' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
+                {haStatus.status === 'connected' ? <Wifi className="w-3.5 h-3.5 mr-1.5" /> : <WifiOff className="w-3.5 h-3.5 mr-1.5" />}
+                {haStatus.status === 'connected' ? 'HA Connected' : haStatus.status === 'connecting' ? 'Connecting...' : 'HA Disconnected'}
+              </div>
+              {haStatus.error && haStatus.status !== 'connected' && (
+                <span className="text-[10px] text-rose-500 mt-1 max-w-[200px] truncate" title={haStatus.error}>
+                  {haStatus.error}
+                </span>
+              )}
             </div>
           </div>
         </header>
@@ -1572,6 +1579,11 @@ export default function App() {
                               value={settings.ha_url || ''}
                               onChange={e => setSettings({...settings, ha_url: e.target.value})}
                             />
+                            {settings.ha_url?.includes('.local') && (
+                              <p className="text-[10px] text-amber-600 mt-1">
+                                Warning: .local addresses are not reachable from the cloud. Use a public URL or Nabu Casa.
+                              </p>
+                            )}
                           </div>
                           <div className="space-y-2">
                             <Label htmlFor="ha_token">Long-Lived Access Token</Label>
@@ -1586,7 +1598,14 @@ export default function App() {
                         </div>
                         <div className="flex items-center gap-4 pt-2">
                           <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
-                          <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
+                          <Button 
+                            type="button" 
+                            variant="outline" 
+                            onClick={handleForceConnect}
+                            disabled={haStatus.status === 'connecting'}
+                          >
+                            {haStatus.status === 'connecting' ? 'Connecting...' : 'Force Reconnect'}
+                          </Button>
                         </div>
                       </form>
                     </CardContent>
@@ -1640,7 +1659,7 @@ export default function App() {
                     </div>
                     <Button 
                       onClick={handleAIScan} 
-                      disabled={isScanning || haStatus !== 'connected'}
+                      disabled={isScanning || haStatus.status !== 'connected'}
                       variant="outline"
                       className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"
                     >

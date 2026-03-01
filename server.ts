@@ -110,6 +110,8 @@ insertSetting.run("ai_model", "gemini-3-flash-preview");
 insertSetting.run("climate_abs_min", "55");
 insertSetting.run("climate_abs_max", "80");
 insertSetting.run("dashboard_default_timeframe", "24h");
+insertSetting.run("ghost_mode_hvac", "true");
+insertSetting.run("ghost_mode_whole_home", "true");
 
 // Helper to get setting with fallback
 function getSetting(key: string, fallback: string): string {
@@ -295,6 +297,10 @@ function connectToHA() {
                   baseUrl.includes('172.31.') ||
                   baseUrl.includes('localhost') ||
                   baseUrl.includes('127.0.0.1');
+
+  if (isLocal) {
+    console.warn(`[HA] Warning: Attempting to connect to a local address (${baseUrl}) from a cloud environment. This will likely fail unless a tunnel is established.`);
+  }
 
   const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/websocket';
   
