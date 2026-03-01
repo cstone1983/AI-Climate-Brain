@@ -390,7 +390,12 @@ export default function App() {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        if (!res.ok) throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
+          }
+          throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        }
         throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
       }
       if (!res.ok) throw new Error(data.error || "Failed to sync system data");
@@ -412,7 +417,12 @@ export default function App() {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        if (!res.ok) throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
+          }
+          throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+        }
         throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
       }
       if (!res.ok) throw new Error(data.error || "Failed to sync automations and scripts");
