@@ -532,7 +532,7 @@ async function runDailyAnalysis() {
       }
     });
 
-    const result = JSON.parse(response.text || "{}");
+    const result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
     
     // Save analysis
     if (result.schedule && result.schedule.name) {
@@ -694,7 +694,7 @@ async function executeRealTimeAIControl() {
       }
     });
 
-    const result = JSON.parse(response.text || "{}");
+    const result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
     
     // Task 4: Fail-Safe Defaults
     if (result.confidence_score === undefined || result.confidence_score === null) {
@@ -1288,7 +1288,7 @@ app.post("/api/ai/scan-entities", async (req, res) => {
       }
     });
 
-    const suggestions = JSON.parse(response.text || "[]");
+    const suggestions = JSON.parse((response.text || "[]").replace(/```json\n?|```/g, '').trim());
     res.json(suggestions);
 
   } catch (e: any) {
