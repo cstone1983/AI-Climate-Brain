@@ -423,10 +423,10 @@ async function runDailyAnalysis() {
   try {
     const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
     const lookbackDays = Number(getSetting("ai_lookback_days", "14"));
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
+    const apiKey = process.env.GEMINI_API_KEY || "";
     
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      const msg = "GEMINI_API_KEY is not configured. Please set a valid API key in the Settings panel.";
+      const msg = "GEMINI_API_KEY is not configured.";
       console.error(msg);
       throw new Error(msg);
     }
@@ -576,7 +576,7 @@ async function executeRealTimeAIControl() {
   try {
     const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
     const contextWindowHours = Number(getSetting("ai_context_window_hours", "2"));
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
+    const apiKey = process.env.GEMINI_API_KEY || "";
     
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
       console.warn("GEMINI_API_KEY is not configured. Skipping real-time control.");
@@ -591,8 +591,8 @@ async function executeRealTimeAIControl() {
       settings[row.key] = row.value;
     }
 
-    const ghostModeHvac = settings.ghost_mode_hvac !== 'false';
-    const ghostModeWholeHome = settings.ghost_mode_whole_home !== 'false';
+    const ghostModeHvac = settings.ghost_mode_hvac === 'true';
+    const ghostModeWholeHome = settings.ghost_mode_whole_home === 'true';
 
     // Task 1: Fetch Occupancy Roster (Strict Initialization)
     const occupancyRoster = db.prepare("SELECT * FROM occupancy_roster").all() as any[] || [];
@@ -708,8 +708,11 @@ async function executeRealTimeAIControl() {
 
       for (const action of result.actions) {
         let ghostModeActive = false;
-        if (action.type === 'hvac' && ghostModeHvac) ghostModeActive = true;
-        if (action.type === 'whole_home' && ghostModeWholeHome) ghostModeActive = true;
+        if (action.type === 'hvac') {
+          if (ghostModeHvac) ghostModeActive = true;
+        } else {
+          if (ghostModeWholeHome) ghostModeActive = true;
+        }
 
         // Task 2: Safety Intercept
         let blockedByGuardrail = false;
@@ -1235,7 +1238,7 @@ app.get("/api/reasoning", (req, res) => {
 
 app.post("/api/ai/scan-entities", async (req, res) => {
   try {
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
+    const apiKey = process.env.GEMINI_API_KEY || "";
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
       throw new Error("GEMINI_API_KEY is not configured.");
     }

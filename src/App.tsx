@@ -47,7 +47,6 @@ export default function App() {
   const [settings, setSettings] = useState({
     ha_url: '',
     ha_token: '',
-    gemini_api_key: '',
     telegram_bot_token: '',
     telegram_chat_id: '',
     user_ai_context: '',
@@ -215,7 +214,16 @@ export default function App() {
   const fetchSettings = async () => {
     const res = await fetch('/api/settings');
     const data = await res.json();
-    setSettings(prev => ({ ...prev, ...data }));
+    setSettings(prev => {
+      const merged = { ...prev, ...data };
+      // Ensure all values are strings to avoid uncontrolled input issues
+      Object.keys(merged).forEach(key => {
+        if (merged[key] === null || merged[key] === undefined) {
+          merged[key] = '';
+        }
+      });
+      return merged;
+    });
     if (data.dashboard_default_timeframe) {
       setGraphTimeframe(data.dashboard_default_timeframe);
     }
@@ -1134,41 +1142,6 @@ export default function App() {
                 <>
                   <Card>
                     <CardHeader>
-                      <CardTitle>Home Assistant Connection</CardTitle>
-                      <CardDescription>Configure your connection to Home Assistant.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="ha_url">Home Assistant URL</Label>
-                            <Input 
-                              id="ha_url" 
-                              placeholder="http://homeassistant.local:8123" 
-                              value={settings.ha_url}
-                              onChange={e => setSettings({...settings, ha_url: e.target.value})}
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="ha_token">Long-Lived Access Token</Label>
-                            <Input 
-                              id="ha_token" 
-                              type="password" 
-                              value={settings.ha_token}
-                              onChange={e => setSettings({...settings, ha_token: e.target.value})}
-                            />
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4 pt-2">
-                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
-                          <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
-                        </div>
-                      </form>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
                       <CardTitle>AI Engine Tuning</CardTitle>
                       <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
                     </CardHeader>
@@ -1596,7 +1569,7 @@ export default function App() {
                             <Input 
                               id="ha_url" 
                               placeholder="http://homeassistant.local:8123" 
-                              value={settings.ha_url}
+                              value={settings.ha_url || ''}
                               onChange={e => setSettings({...settings, ha_url: e.target.value})}
                             />
                           </div>
@@ -1605,7 +1578,8 @@ export default function App() {
                             <Input 
                               id="ha_token" 
                               type="password" 
-                              value={settings.ha_token}
+                              autoComplete="new-password"
+                              value={settings.ha_token || ''}
                               onChange={e => setSettings({...settings, ha_token: e.target.value})}
                             />
                           </div>
@@ -1613,30 +1587,6 @@ export default function App() {
                         <div className="flex items-center gap-4 pt-2">
                           <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
                           <Button type="button" variant="outline" onClick={handleForceConnect}>Force Reconnect</Button>
-                        </div>
-                      </form>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Gemini API</CardTitle>
-                      <CardDescription>Configure your Gemini API key for AI features.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="gemini_api_key">Gemini API Key</Label>
-                          <Input 
-                            id="gemini_api_key" 
-                            type="password" 
-                            placeholder="AIzaSy..." 
-                            value={settings.gemini_api_key}
-                            onChange={e => setSettings({...settings, gemini_api_key: e.target.value})}
-                          />
-                        </div>
-                        <div className="flex items-center gap-4 pt-2">
-                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Key</Button>
                         </div>
                       </form>
                     </CardContent>
@@ -1655,8 +1605,9 @@ export default function App() {
                             <Input 
                               id="telegram_bot_token" 
                               type="password" 
+                              autoComplete="new-password"
                               placeholder="123456789:ABCdef..." 
-                              value={settings.telegram_bot_token}
+                              value={settings.telegram_bot_token || ''}
                               onChange={e => setSettings({...settings, telegram_bot_token: e.target.value})}
                             />
                           </div>
@@ -1666,7 +1617,7 @@ export default function App() {
                               id="telegram_chat_id" 
                               type="text" 
                               placeholder="-1001234567890" 
-                              value={settings.telegram_chat_id}
+                              value={settings.telegram_chat_id || ''}
                               onChange={e => setSettings({...settings, telegram_chat_id: e.target.value})}
                             />
                           </div>
