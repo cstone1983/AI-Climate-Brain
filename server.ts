@@ -84,9 +84,21 @@ db.exec(`
     status TEXT DEFAULT 'unknown'
   );
 
+  CREATE TABLE IF NOT EXISTS logbook_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT,
+    message TEXT,
+    when_ts DATETIME,
+    context_user_id TEXT,
+    domain TEXT,
+    attributes TEXT
+  );
+
   -- Indexes for long-term vast data storage performance
   CREATE INDEX IF NOT EXISTS idx_device_history_entity_time ON device_history(entity_id, last_changed);
   CREATE INDEX IF NOT EXISTS idx_device_history_time ON device_history(last_changed);
+  CREATE INDEX IF NOT EXISTS idx_logbook_time ON logbook_history(when_ts);
+  CREATE INDEX IF NOT EXISTS idx_logbook_entity ON logbook_history(entity_id);
 `);
 
 // Safe migration for new columns
@@ -162,15 +174,34 @@ async function fillHistoryGaps(fullSync = false) {
     
     const lookbackDays = Number(getSetting("ai_lookback_days", "14"));
     
-    // Fetch all states to find all climate and temperature entities
+    // Task: Robust Entity Search
+    // Fetch all states to find all relevant entities for a "complete" picture
     const allStates = await fetchHA('/api/states');
     let entitiesToFetch = new Set<string>(trackedIds);
     
+    const importantDomains = [
+      'climate.', 'sensor.', 'binary_sensor.', 'person.', 'device_tracker.', 
+      'light.', 'switch.', 'input_boolean.', 'input_select.', 'input_number.', 
+      'input_datetime.', 'lock.', 'cover.', 'fan.', 'humidifier.', 'water_heater.'
+    ];
+
     if (allStates && Array.isArray(allStates)) {
       for (const stateObj of allStates) {
-        if (stateObj.entity_id.startsWith('climate.') || 
-            (stateObj.entity_id.startsWith('sensor.') && stateObj.entity_id.includes('temperature'))) {
-          entitiesToFetch.add(stateObj.entity_id);
+        const eid = stateObj.entity_id;
+        const isImportant = importantDomains.some(domain => eid.startsWith(domain));
+        
+        // Filter sensors to avoid noise (like uptime, version, etc) unless tracked
+        if (isImportant) {
+          if (eid.startsWith('sensor.')) {
+            const lower = eid.toLowerCase();
+            if (lower.includes('temp') || lower.includes('hum') || lower.includes('batt') || 
+                lower.includes('occup') || lower.includes('power') || lower.includes('energy') || 
+                lower.includes('illuminance') || lower.includes('co2') || lower.includes('presence')) {
+              entitiesToFetch.add(eid);
+            }
+          } else {
+            entitiesToFetch.add(eid);
+          }
         }
       }
     }
@@ -181,32 +212,54 @@ async function fillHistoryGaps(fullSync = false) {
       return;
     }
 
-    console.log(`Checking history for ${entitiesArray.length} entities...`);
+    console.log(`Checking history for ${entitiesArray.length} entities over ${lookbackDays} days...`);
     const insertHistory = db.prepare("INSERT OR IGNORE INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, ?)");
+    const insertLogbook = db.prepare("INSERT OR IGNORE INTO logbook_history (entity_id, message, when_ts, context_user_id, domain, attributes) VALUES (?, ?, ?, ?, ?, ?)");
     
     let entitiesProcessed = 0;
-    for (const entity_id of entitiesArray) {
-      // Get last record for THIS specific entity
-      const lastRecord = db.prepare("SELECT MAX(last_changed) as last_ts FROM device_history WHERE entity_id = ?").get(entity_id) as any;
-      
-      let startTime = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString(); 
-      if (!fullSync && lastRecord && lastRecord.last_ts) {
-        const parsedDate = new Date(lastRecord.last_ts + 'Z');
-        if (!isNaN(parsedDate.getTime())) {
-          startTime = parsedDate.toISOString();
-        }
-      }
+    const now = new Date();
 
-      try {
-        console.log(`[Sync] Fetching history for ${entity_id} starting from ${startTime}`);
-        const historyData = await fetchHA(`/api/history/period/${encodeURIComponent(startTime)}?filter_entity_id=${entity_id}`);
-        if (historyData && Array.isArray(historyData)) {
-          let recordsAdded = 0;
-          db.transaction(() => {
-            for (const entityHistory of historyData) {
-              for (const stateObj of entityHistory) {
-                // Normalize timestamp to YYYY-MM-DD HH:MM:SS for consistent SQLite comparison
-                let ts = stateObj.last_changed;
+    for (const entity_id of entitiesArray) {
+      // Task: Day-by-Day Fetching
+      for (let dayOffset = lookbackDays; dayOffset >= 0; dayOffset--) {
+        const startTimeDate = new Date(now.getTime() - (dayOffset + 1) * 24 * 60 * 60 * 1000);
+        const endTimeDate = new Date(now.getTime() - dayOffset * 24 * 60 * 60 * 1000);
+        
+        const startTime = startTimeDate.toISOString();
+        const endTime = endTimeDate.toISOString();
+
+        try {
+          // 1. Fetch History for this day
+          const historyUrl = `/api/history/period/${encodeURIComponent(startTime)}?filter_entity_id=${entity_id}&end_time=${encodeURIComponent(endTime)}`;
+          const historyData = await fetchHA(historyUrl);
+          
+          if (historyData && Array.isArray(historyData)) {
+            db.transaction(() => {
+              for (const entityHistory of historyData) {
+                for (const stateObj of entityHistory) {
+                  let ts = stateObj.last_changed;
+                  if (ts) {
+                    try {
+                      const d = new Date(ts);
+                      if (!isNaN(d.getTime())) {
+                        ts = d.toISOString().replace('T', ' ').replace('Z', '');
+                      }
+                    } catch (e) {}
+                  }
+                  insertHistory.run(stateObj.entity_id, stateObj.state, JSON.stringify(stateObj.attributes || {}), ts);
+                }
+              }
+            })();
+          }
+
+          // 2. Fetch Logbook for this day
+          const logbookUrl = `/api/logbook/${encodeURIComponent(startTime)}?entity=${entity_id}&end_time=${encodeURIComponent(endTime)}`;
+          const logbookData = await fetchHA(logbookUrl);
+          
+          if (logbookData && Array.isArray(logbookData)) {
+            db.transaction(() => {
+              for (const entry of logbookData) {
+                let ts = entry.when;
                 if (ts) {
                   try {
                     const d = new Date(ts);
@@ -215,18 +268,23 @@ async function fillHistoryGaps(fullSync = false) {
                     }
                   } catch (e) {}
                 }
-                insertHistory.run(stateObj.entity_id, stateObj.state, JSON.stringify(stateObj.attributes || {}), ts);
-                recordsAdded++;
+                insertLogbook.run(
+                  entry.entity_id || entity_id,
+                  entry.message || '',
+                  ts,
+                  entry.context_user_id || null,
+                  entry.domain || (entry.entity_id ? entry.entity_id.split('.')[0] : null),
+                  JSON.stringify(entry)
+                );
               }
-            }
-          })();
-          console.log(`[Sync] Added ${recordsAdded} records for ${entity_id}`);
+            })();
+          }
+
+          // Small delay to avoid hammering HA too hard
+          await sleep(100);
+        } catch (err: any) {
+          console.error(`Error fetching data for ${entity_id} on day -${dayOffset}:`, err.message);
         }
-        
-        // Slow staged way: Wait 500ms between entities to avoid overloading HA
-        await sleep(500);
-      } catch (err: any) {
-        console.error(`Error fetching history for ${entity_id}:`, err.message);
       }
       
       entitiesProcessed++;
@@ -237,9 +295,12 @@ async function fillHistoryGaps(fullSync = false) {
           entity: entity_id
         });
       }
+      
+      // Wait between entities
+      await sleep(200);
     }
     
-    console.log("History gap fill complete.");
+    console.log("History and Logbook sync complete.");
     if (fullSync) {
       broadcastToFrontend({ type: 'SYNC_COMPLETE' });
     }
@@ -483,6 +544,7 @@ async function runDailyAnalysis() {
     const trackedIds = trackedRows.map(t => t.entity_id);
     
     let history: any[] = [];
+    let logbook: any[] = [];
     if (trackedIds.length > 0) {
       const placeholders = trackedIds.map(() => '?').join(',');
       history = db.prepare(`
@@ -491,6 +553,14 @@ async function runDailyAnalysis() {
         WHERE last_changed >= datetime('now', '-${lookbackDays} days') 
         AND entity_id IN (${placeholders})
         ORDER BY last_changed ASC
+      `).all(...trackedIds) as any[] || [];
+
+      logbook = db.prepare(`
+        SELECT entity_id, message, when_ts, domain 
+        FROM logbook_history 
+        WHERE when_ts >= datetime('now', '-${lookbackDays} days') 
+        AND entity_id IN (${placeholders})
+        ORDER BY when_ts ASC
       `).all(...trackedIds) as any[] || [];
     }
 
@@ -515,6 +585,7 @@ async function runDailyAnalysis() {
       SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
       Tracked Devices: ${JSON.stringify(trackedRows)}
       Recent History (Last ${lookbackDays} Days): ${JSON.stringify(history.slice(-1000))}
+      Logbook Events (Last ${lookbackDays} Days): ${JSON.stringify(logbook.slice(-500))}
       
       Return a JSON object with:
       {
@@ -673,6 +744,14 @@ async function executeRealTimeAIControl() {
       ORDER BY last_changed ASC
     `).all(...trackedIds) as any[] : [];
 
+    const recentLogbook = trackedIds.length > 0 ? db.prepare(`
+      SELECT entity_id, message, when_ts, domain 
+      FROM logbook_history 
+      WHERE when_ts >= datetime('now', '-${contextWindowHours} hours') 
+      AND entity_id IN (${placeholders})
+      ORDER BY when_ts ASC
+    `).all(...trackedIds) as any[] : [];
+
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
     const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
 
@@ -692,6 +771,7 @@ async function executeRealTimeAIControl() {
       TRACKED DEVICES (General): ${JSON.stringify(trackedContext)}
       CURRENT STATES: ${JSON.stringify(trackedStates)}
       RECENT HISTORY (Last ${contextWindowHours} Hours): ${JSON.stringify(recentHistory)}
+      RECENT LOGBOOK (Last ${contextWindowHours} Hours): ${JSON.stringify(recentLogbook)}
       
       Return a JSON object with:
       { 
@@ -991,6 +1071,7 @@ app.post("/api/ha/sync-system-data", async (req, res) => {
     states: [],
     config: {},
     history: [],
+    logbook: [],
     exported_at: new Date().toISOString()
   };
 
@@ -1044,6 +1125,14 @@ app.post("/api/ha/sync-system-data", async (req, res) => {
           }).filter((arr: any) => arr.length > 0);
           
           fullExport.history = filteredHistory;
+        }
+
+        // 4. Targeted Logbook Sampling
+        try {
+          const logbookData = await fetchHA(`/api/logbook/${encodeURIComponent(startTime)}?entity=${allIds.join(',')}`);
+          fullExport.logbook = Array.isArray(logbookData) ? logbookData : [];
+        } catch (err: any) {
+          console.error("Error fetching logbook for sync:\n", err.stack || err);
         }
       } else {
         console.log("No entities to fetch history for during sync.");
