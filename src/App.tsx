@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   UserPlus,
   Trash2,
+  Edit2,
   Scan,
   CheckCircle,
   AlertCircle,
@@ -93,6 +94,9 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
   const [scheduleViewMode, setScheduleViewMode] = useState<'calendar' | 'json'>('calendar');
+  const [newAiContextNote, setNewAiContextNote] = useState('');
+  const [editingAiContextNoteId, setEditingAiContextNoteId] = useState<string | null>(null);
+  const [editingAiContextNoteText, setEditingAiContextNoteText] = useState('');
 
   useEffect(() => {
     if (currentUser) {
@@ -210,6 +214,70 @@ export default function App() {
   const handleDeleteUser = async (id: number) => {
     await fetch(`/api/users/${id}`, { method: 'DELETE' });
     fetchUsers();
+  };
+
+  const getAiContextNotes = () => {
+    try {
+      const parsed = JSON.parse(settings.user_ai_context);
+      if (Array.isArray(parsed)) return parsed;
+      if (settings.user_ai_context.trim()) return [{ id: Date.now().toString(), text: settings.user_ai_context }];
+      return [];
+    } catch (e) {
+      if (settings.user_ai_context.trim()) return [{ id: Date.now().toString(), text: settings.user_ai_context }];
+      return [];
+    }
+  };
+
+  const handleAddAiContextNote = async () => {
+    if (!newAiContextNote.trim()) return;
+    const notes = getAiContextNotes();
+    const newNotes = [...notes, { id: Date.now().toString(), text: newAiContextNote.trim() }];
+    const newContextString = JSON.stringify(newNotes);
+    setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
+    setNewAiContextNote('');
+    
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ai_context: newContextString })
+    });
+    toast({ title: "Note Added", description: "AI context note saved." });
+  };
+
+  const handleDeleteAiContextNote = async (id: string) => {
+    const notes = getAiContextNotes();
+    const newNotes = notes.filter((n: any) => n.id !== id);
+    const newContextString = JSON.stringify(newNotes);
+    setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
+    
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ai_context: newContextString })
+    });
+    toast({ title: "Note Deleted", description: "AI context note removed." });
+  };
+
+  const handleStartEditAiContextNote = (id: string, text: string) => {
+    setEditingAiContextNoteId(id);
+    setEditingAiContextNoteText(text);
+  };
+
+  const handleSaveEditAiContextNote = async () => {
+    if (!editingAiContextNoteId) return;
+    const notes = getAiContextNotes();
+    const newNotes = notes.map((n: any) => n.id === editingAiContextNoteId ? { ...n, text: editingAiContextNoteText } : n);
+    const newContextString = JSON.stringify(newNotes);
+    setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
+    setEditingAiContextNoteId(null);
+    setEditingAiContextNoteText('');
+    
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ai_context: newContextString })
+    });
+    toast({ title: "Note Updated", description: "AI context note updated." });
   };
 
   const fetchSettings = async () => {
@@ -1413,13 +1481,49 @@ export default function App() {
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-4">
-                        <textarea
-                          className="w-full min-h-[100px] p-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none resize-y"
-                          placeholder="Add any upcoming events, schedule changes, or context the AI should know about..."
-                          value={settings.user_ai_context}
-                          onChange={e => setSettings({...settings, user_ai_context: e.target.value})}
-                        />
-                        <Button onClick={handleSaveSettings} className="bg-slate-900 text-white hover:bg-slate-800">Save Context</Button>
+                        <div className="space-y-2">
+                          {getAiContextNotes().map((note: any) => (
+                            <div key={note.id} className="flex items-start gap-2 p-3 bg-slate-50 border border-slate-100 rounded-lg">
+                              {editingAiContextNoteId === note.id ? (
+                                <div className="flex-1 flex gap-2">
+                                  <textarea
+                                    className="flex-1 min-h-[60px] p-2 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 outline-none resize-y"
+                                    value={editingAiContextNoteText}
+                                    onChange={e => setEditingAiContextNoteText(e.target.value)}
+                                  />
+                                  <div className="flex flex-col gap-2">
+                                    <Button size="sm" onClick={handleSaveEditAiContextNote} className="bg-emerald-600 hover:bg-emerald-700 text-white">Save</Button>
+                                    <Button size="sm" variant="outline" onClick={() => setEditingAiContextNoteId(null)}>Cancel</Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="flex-1 text-sm text-slate-700 whitespace-pre-wrap">{note.text}</div>
+                                  <div className="flex gap-1">
+                                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-400 hover:text-slate-600" onClick={() => handleStartEditAiContextNote(note.id, note.text)}>
+                                      <Edit2 className="h-4 w-4" />
+                                    </Button>
+                                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-400 hover:text-red-500" onClick={() => handleDeleteAiContextNote(note.id)}>
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                          {getAiContextNotes().length === 0 && (
+                            <div className="text-sm text-slate-500 italic p-4 text-center border border-dashed border-slate-200 rounded-lg">No context notes added yet.</div>
+                          )}
+                        </div>
+                        <div className="flex gap-2 items-start mt-4">
+                          <textarea
+                            className="flex-1 min-h-[80px] p-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none resize-y"
+                            placeholder="Add any upcoming events, schedule changes, or context the AI should know about..."
+                            value={newAiContextNote}
+                            onChange={e => setNewAiContextNote(e.target.value)}
+                          />
+                          <Button onClick={handleAddAiContextNote} className="bg-slate-900 text-white hover:bg-slate-800 h-10">Add Note</Button>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>

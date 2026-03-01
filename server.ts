@@ -24,6 +24,19 @@ const db = new Database("home_brain.db");
 
 const CURRENT_DB_VERSION = 2; // Increment this when adding new migrations
 
+function parseUserContext(rawValue: string): string {
+  if (!rawValue) return "";
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (Array.isArray(parsed)) {
+      return parsed.map((n: any, i: number) => `${i + 1}. ${n.text}`).join('\n');
+    }
+    return `1. ${rawValue}`;
+  } catch (e) {
+    return `1. ${rawValue}`;
+  }
+}
+
 function initializeDatabase() {
   console.log("Initializing database...");
   
@@ -649,7 +662,8 @@ async function runDailyAnalysis() {
     }
 
     const settingsRows = db.prepare("SELECT * FROM settings WHERE key = 'user_ai_context'").get() as any;
-    const userContext = settingsRows ? settingsRows.value : "";
+    const userContextRaw = settingsRows ? settingsRows.value : "";
+    const userContext = parseUserContext(userContextRaw);
 
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
     const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
@@ -667,8 +681,15 @@ async function runDailyAnalysis() {
       4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
       5. Provide detailed reasoning for every schedule block.
       6. LEARN FROM USER AUTOMATIONS: I have provided a list of your existing Home Assistant automations and scripts. Use these to understand how you group actions (e.g., "Night Mode", "Away Mode", "Arriving Home") and what triggers you typically use (e.g., sunrise, sunset, presence). This helps you align your generated schedules with your existing preferences.
+      7. GLOBAL HOUSE MODES: Transition from basic temperature scheduling to a state-based mode engine (e.g., Night, Away, Home). Factor the current and upcoming "Mode" into your decisions.
+      8. PREDICTIVE PRE-CONDITIONING: Calculate "Thermal Inertia" from the device_history (e.g., recognizing how long a room takes to drop 2 degrees) and factor in external elements like humidity to trigger HVAC ahead of schedule.
+      9. SCRIPT EXECUTION PRIORITY: Prioritize triggering existing Home Assistant scripts or automations using the Long-Lived Access Token, rather than attempting to micro-manage devices directly.
+      10. SCOPE EXCLUSION: Do not include or plan for any solar-production logic or solar-weighted algorithms at this time. If Home Assistant disconnects, do not attempt to build hardware failsafes; simply log the error and halt commands.
+      11. HIGH PRIORITY CONTEXT: Pay extremely close attention to the USER PROVIDED CONTEXT notes below. These notes represent explicit user instructions, overrides, or upcoming events. Also, any notes or descriptions attached to specific devices must be treated as high priority constraints.
       
-      USER PROVIDED CONTEXT: "${userContext}"
+      USER PROVIDED CONTEXT:
+      ${userContext}
+      
       SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       Tracked Devices: ${JSON.stringify(trackedRows)}
@@ -856,6 +877,10 @@ async function executeRealTimeAIControl() {
       1. If the home state transitions to 'Sleep' or 'Away', you must output actions to proactively adjust the HVAC zone temperatures and turn off active lights.
       2. Analyze media_player, light, and binary_sensor (motion) entities alongside climate data to infer human behavior.
       3. LEARN FROM USER AUTOMATIONS: Use the provided Home Assistant automations and scripts to understand user intent for various home states (e.g., what "Night Mode" means to this specific user).
+      4. GLOBAL HOUSE MODES: Factor the current and upcoming "Mode" (e.g., Night, Away, Home) into your decisions.
+      5. PREDICTIVE PRE-CONDITIONING: Calculate "Thermal Inertia" from the device_history (e.g., recognizing how long a room takes to drop 2 degrees) and factor in external elements like humidity to trigger HVAC ahead of schedule.
+      6. SCRIPT EXECUTION PRIORITY: Prioritize triggering existing Home Assistant scripts or automations using the Long-Lived Access Token, rather than attempting to micro-manage devices directly.
+      7. SCOPE EXCLUSION: Do not include or plan for any solar-production logic or solar-weighted algorithms at this time. If Home Assistant disconnects, do not attempt to build hardware failsafes; simply log the error and halt commands.
       
       SYSTEM SNAPSHOT: ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
@@ -934,7 +959,23 @@ async function executeRealTimeAIControl() {
         let blockedByGuardrail = false;
         let blockReason = "";
 
-        if (action.domain === 'climate' && action.service === 'set_temperature') {
+        // Prevent rapid HVAC cycling (no toggling the same entity within a 5-minute window)
+        if (action.domain === 'climate') {
+          const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const recentToggle = db.prepare(`
+            SELECT id FROM device_history 
+            WHERE entity_id = ? AND last_changed >= ? 
+            ORDER BY last_changed DESC LIMIT 1
+          `).get(action.entity_id, fiveMinsAgo);
+
+          if (recentToggle) {
+            blockedByGuardrail = true;
+            blockReason = `[BLOCKED BY GUARDRAIL] Rapid HVAC cycling prevented for ${action.entity_id} (toggled within last 5 minutes).`;
+            console.warn(blockReason);
+          }
+        }
+
+        if (!blockedByGuardrail && action.domain === 'climate' && action.service === 'set_temperature') {
           const targetTemp = Number(action.service_data?.temperature);
           if (!isNaN(targetTemp)) {
             if (targetTemp < absMin || targetTemp > absMax) {
@@ -1392,7 +1433,8 @@ app.get("/api/ai/real-time-context", async (req, res) => {
     `).all(...trackedIds) as any[];
 
     const settingsRows = db.prepare("SELECT * FROM settings WHERE key = 'user_ai_context'").get() as any;
-    const userContext = settingsRows ? settingsRows.value : "";
+    const userContextRaw = settingsRows ? settingsRows.value : "";
+    const userContext = parseUserContext(userContextRaw);
 
     // Fetch latest system snapshot
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
