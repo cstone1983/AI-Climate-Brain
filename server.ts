@@ -22,125 +22,162 @@ app.use(express.json());
 // Initialize SQLite Database
 const db = new Database("home_brain.db");
 
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
+const CURRENT_DB_VERSION = 2; // Increment this when adding new migrations
+
+function initializeDatabase() {
+  console.log("Initializing database...");
   
-  CREATE TABLE IF NOT EXISTS device_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_id TEXT,
-    state TEXT,
-    attributes TEXT,
-    last_changed DATETIME DEFAULT (datetime('now'))
-  );
+  // 1. Create core settings table first to track version
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
 
-  CREATE TABLE IF NOT EXISTS schedules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    description TEXT,
-    schedule_data TEXT,
-    created_at DATETIME DEFAULT (datetime('now'))
-  );
+  // 2. Check current version
+  const getVer = db.prepare("SELECT value FROM settings WHERE key = 'db_version'").get() as any;
+  let currentVersion = getVer ? parseInt(getVer.value) : 0;
+  
+  console.log(`Current DB Version: ${currentVersion}, Target Version: ${CURRENT_DB_VERSION}`);
 
-  CREATE TABLE IF NOT EXISTS tracked_entities (
-    entity_id TEXT PRIMARY KEY,
-    tracked BOOLEAN DEFAULT 1
-  );
+  // 3. Initial Schema (Version 1)
+  if (currentVersion < 1) {
+    console.log("Applying Migration: Version 1 (Initial Schema)");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS device_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT,
+        state TEXT,
+        attributes TEXT,
+        last_changed DATETIME DEFAULT (datetime('now'))
+      );
+      
+      CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        description TEXT,
+        schedule_data TEXT,
+        created_at DATETIME DEFAULT (datetime('now'))
+      );
+    
+      CREATE TABLE IF NOT EXISTS tracked_entities (
+        entity_id TEXT PRIMARY KEY,
+        tracked BOOLEAN DEFAULT 1
+      );
+    
+      CREATE TABLE IF NOT EXISTS insights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT,
+        created_at DATETIME DEFAULT (datetime('now'))
+      );
+    
+      CREATE TABLE IF NOT EXISTS ai_reasoning (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        context TEXT,
+        decision TEXT,
+        reasoning TEXT,
+        created_at DATETIME DEFAULT (datetime('now'))
+      );
+    
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT
+      );
+    
+      CREATE TABLE IF NOT EXISTS ha_system_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT,
+        created_at DATETIME DEFAULT (datetime('now'))
+      );
+    
+      CREATE TABLE IF NOT EXISTS occupancy_roster (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        entity_id TEXT,
+        status TEXT DEFAULT 'unknown'
+      );
+    
+      CREATE TABLE IF NOT EXISTS logbook_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT,
+        message TEXT,
+        when_ts DATETIME,
+        context_user_id TEXT,
+        domain TEXT,
+        attributes TEXT
+      );
+    
+      CREATE TABLE IF NOT EXISTS ha_rules (
+        entity_id TEXT PRIMARY KEY,
+        name TEXT,
+        domain TEXT,
+        state TEXT,
+        attributes TEXT,
+        last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    
+      CREATE TABLE IF NOT EXISTS ha_automations_scripts (
+        entity_id TEXT PRIMARY KEY,
+        name TEXT,
+        domain TEXT,
+        content TEXT,
+        last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    
+      CREATE INDEX IF NOT EXISTS idx_device_history_entity_time ON device_history(entity_id, last_changed);
+      CREATE INDEX IF NOT EXISTS idx_device_history_time ON device_history(last_changed);
+      CREATE INDEX IF NOT EXISTS idx_logbook_time ON logbook_history(when_ts);
+      CREATE INDEX IF NOT EXISTS idx_logbook_entity ON logbook_history(entity_id);
+    `);
+    
+    currentVersion = 1;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
+  }
 
-  CREATE TABLE IF NOT EXISTS insights (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content TEXT,
-    created_at DATETIME DEFAULT (datetime('now'))
-  );
+  // 4. Sequential Migrations
+  if (currentVersion < 2) {
+    console.log("Applying Migration: Version 2 (Adding notes to tracked_entities and unique index)");
+    try {
+      db.exec("ALTER TABLE tracked_entities ADD COLUMN notes TEXT DEFAULT ''");
+    } catch (e) {
+      // Column might already exist from previous manual attempts
+      console.warn("Migration V2 Warning: 'notes' column might already exist.");
+    }
+    
+    try {
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique ON device_history(entity_id, last_changed)");
+    } catch (e) {
+      console.warn("Migration V2 Warning: 'idx_history_unique' might already exist.");
+    }
+    
+    currentVersion = 2;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
+  }
 
-  CREATE TABLE IF NOT EXISTS ai_reasoning (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context TEXT,
-    decision TEXT,
-    reasoning TEXT,
-    created_at DATETIME DEFAULT (datetime('now'))
-  );
+  // 5. Default Settings & Admin User
+  const insertSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
+  insertSetting.run("ha_url", "http://homeassistant.local:8123");
+  insertSetting.run("ha_token", "");
+  insertSetting.run("user_ai_context", "");
+  insertSetting.run("dashboard_graph_zones", "[]");
+  insertSetting.run("ai_realtime_interval", "5");
+  insertSetting.run("ai_lookback_days", "14");
+  insertSetting.run("ai_context_window_hours", "2");
+  insertSetting.run("ai_model", "gemini-3-flash-preview");
+  insertSetting.run("climate_abs_min", "55");
+  insertSetting.run("climate_abs_max", "80");
+  insertSetting.run("dashboard_default_timeframe", "24h");
+  insertSetting.run("ghost_mode_hvac", "true");
+  insertSetting.run("ghost_mode_whole_home", "true");
 
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    role TEXT
-  );
+  const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)");
+  insertUser.run("admin", "admin", "admin");
 
-  CREATE TABLE IF NOT EXISTS ha_system_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    data TEXT,
-    created_at DATETIME DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS occupancy_roster (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    entity_id TEXT,
-    status TEXT DEFAULT 'unknown'
-  );
-
-  CREATE TABLE IF NOT EXISTS logbook_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_id TEXT,
-    message TEXT,
-    when_ts DATETIME,
-    context_user_id TEXT,
-    domain TEXT,
-    attributes TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS ha_rules (
-    entity_id TEXT PRIMARY KEY,
-    name TEXT,
-    domain TEXT,
-    state TEXT,
-    attributes TEXT,
-    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS ha_automations_scripts (
-    entity_id TEXT PRIMARY KEY,
-    name TEXT,
-    domain TEXT,
-    content TEXT,
-    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  -- Indexes for long-term vast data storage performance
-  CREATE INDEX IF NOT EXISTS idx_device_history_entity_time ON device_history(entity_id, last_changed);
-  CREATE INDEX IF NOT EXISTS idx_device_history_time ON device_history(last_changed);
-  CREATE INDEX IF NOT EXISTS idx_logbook_time ON logbook_history(when_ts);
-  CREATE INDEX IF NOT EXISTS idx_logbook_entity ON logbook_history(entity_id);
-`);
-
-// Safe migration for new columns
-try {
-  db.exec("ALTER TABLE tracked_entities ADD COLUMN notes TEXT DEFAULT ''");
-} catch (e) {}
-try {
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique ON device_history(entity_id, last_changed)");
-} catch (e) {}
-
-// Default settings if not exist
-const insertSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
-insertSetting.run("ha_url", "http://homeassistant.local:8123");
-insertSetting.run("ha_token", "");
-insertSetting.run("user_ai_context", "");
-insertSetting.run("dashboard_graph_zones", "[]");
-insertSetting.run("ai_realtime_interval", "5");
-insertSetting.run("ai_lookback_days", "14");
-insertSetting.run("ai_context_window_hours", "2");
-insertSetting.run("ai_model", "gemini-3-flash-preview");
-insertSetting.run("climate_abs_min", "55");
-insertSetting.run("climate_abs_max", "80");
-insertSetting.run("dashboard_default_timeframe", "24h");
-insertSetting.run("ghost_mode_hvac", "true");
-insertSetting.run("ghost_mode_whole_home", "true");
+  console.log("Database initialization complete.");
+}
 
 // Helper to get setting with fallback
 function getSetting(key: string, fallback: string): string {
@@ -153,9 +190,7 @@ function getSetting(key: string, fallback: string): string {
   }
 }
 
-// Default Admin User
-const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)");
-insertUser.run("admin", "admin", "admin");
+initializeDatabase();
 
 // --- WebSocket Setup ---
 const wss = new WebSocketServer({ noServer: true });
@@ -326,6 +361,31 @@ async function fillHistoryGaps(fullSync = false) {
   }
 }
 
+function isLocalAddress(url: string): boolean {
+  const lowerUrl = url.toLowerCase();
+  return lowerUrl.includes('.local') || 
+         lowerUrl.includes('192.168.') || 
+         lowerUrl.includes('10.') || 
+         lowerUrl.includes('172.16.') || 
+         lowerUrl.includes('172.17.') || 
+         lowerUrl.includes('172.18.') || 
+         lowerUrl.includes('172.19.') || 
+         lowerUrl.includes('172.20.') || 
+         lowerUrl.includes('172.21.') || 
+         lowerUrl.includes('172.22.') || 
+         lowerUrl.includes('172.23.') || 
+         lowerUrl.includes('172.24.') || 
+         lowerUrl.includes('172.25.') || 
+         lowerUrl.includes('172.26.') || 
+         lowerUrl.includes('172.27.') || 
+         lowerUrl.includes('172.28.') || 
+         lowerUrl.includes('172.29.') || 
+         lowerUrl.includes('172.30.') || 
+         lowerUrl.includes('172.31.') ||
+         lowerUrl.includes('localhost') ||
+         lowerUrl.includes('127.0.0.1');
+}
+
 function connectToHA() {
   if (haReconnectTimeout) {
     clearTimeout(haReconnectTimeout);
@@ -353,30 +413,7 @@ function connectToHA() {
 
   const baseUrl = ha_url.endsWith('/') ? ha_url.slice(0, -1) : ha_url;
   
-  // Check for local addresses if in cloud environment
-  const isLocal = baseUrl.includes('.local') || 
-                  baseUrl.includes('192.168.') || 
-                  baseUrl.includes('10.') || 
-                  baseUrl.includes('172.16.') || 
-                  baseUrl.includes('172.17.') || 
-                  baseUrl.includes('172.18.') || 
-                  baseUrl.includes('172.19.') || 
-                  baseUrl.includes('172.20.') || 
-                  baseUrl.includes('172.21.') || 
-                  baseUrl.includes('172.22.') || 
-                  baseUrl.includes('172.23.') || 
-                  baseUrl.includes('172.24.') || 
-                  baseUrl.includes('172.25.') || 
-                  baseUrl.includes('172.26.') || 
-                  baseUrl.includes('172.27.') || 
-                  baseUrl.includes('172.28.') || 
-                  baseUrl.includes('172.29.') || 
-                  baseUrl.includes('172.30.') || 
-                  baseUrl.includes('172.31.') ||
-                  baseUrl.includes('localhost') ||
-                  baseUrl.includes('127.0.0.1');
-
-  if (isLocal) {
+  if (isLocalAddress(baseUrl)) {
     console.warn(`[HA] Warning: Attempting to connect to a local address (${baseUrl}) from a cloud environment. This will likely fail unless a tunnel is established.`);
   }
 
@@ -476,17 +513,35 @@ async function fetchHA(endpoint: string) {
   const baseUrl = ha_url.endsWith('/') ? ha_url.slice(0, -1) : ha_url;
   const endpointUrl = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
-  const res = await fetch(`${baseUrl}${endpointUrl}`, {
-    headers: {
-      "Authorization": `Bearer ${ha_token}`,
-      "Content-Type": "application/json"
-    }
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`HA API Error (${res.status} ${res.statusText}) on ${endpointUrl}: ${errorText}`);
+  if (isLocalAddress(baseUrl)) {
+    console.warn(`[HA REST] Warning: Using local address ${baseUrl}. This may fail in cloud environments.`);
   }
-  return res.json();
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+  try {
+    const res = await fetch(`${baseUrl}${endpointUrl}`, {
+      headers: {
+        "Authorization": `Bearer ${ha_token}`,
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`HA API Error (${res.status} ${res.statusText}) on ${endpointUrl}: ${errorText}`);
+    }
+    return res.json();
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error(`HA API Timeout (10s) on ${endpointUrl}. Check if your HA instance is reachable.`);
+    }
+    throw err;
+  }
 }
 
 async function callHAService(domain: string, service: string, serviceData: any) {
@@ -1070,32 +1125,67 @@ app.get("/api/system/check-update", async (req, res) => {
 
 app.post("/api/system/update", async (req, res) => {
   try {
-    if (!fs.existsSync(path.join(__dirname, '.git'))) {
+    const gitDir = path.join(__dirname, '.git');
+    if (!fs.existsSync(gitDir)) {
       return res.status(400).json({ success: false, error: "System updates are disabled in this environment (not a git repository)." });
     }
 
-    // Pull latest changes
+    console.log("[Update] Starting robust system update...");
+    
+    // 1. Stash any local changes to avoid pull conflicts
+    try {
+      console.log("[Update] Stashing local changes...");
+      await execAsync('git stash');
+    } catch (e) {
+      console.log("[Update] No local changes to stash or stash failed (ignoring).");
+    }
+
+    // 2. Pull latest changes
+    console.log("[Update] Pulling latest changes from origin/main...");
     await execAsync('git pull origin main');
     
-    // Install dependencies
+    // 3. Install dependencies
+    console.log("[Update] Installing dependencies...");
     await execAsync('npm install');
     
-    // Build the application
+    // 4. Build the application
+    console.log("[Update] Building application...");
     await execAsync('npm run build');
     
-    res.json({ success: true, message: "Update pulled and built successfully! Please restart the service (e.g., pm2 restart homebrain) to apply the changes." });
+    // 5. Verify build output exists
+    const distDir = path.join(__dirname, 'dist');
+    if (!fs.existsSync(distDir)) {
+      throw new Error("Build failed: 'dist' directory not found after npm run build.");
+    }
+
+    console.log("[Update] Update successful.");
+    res.json({ 
+      success: true, 
+      message: "Update pulled and built successfully! The server will now attempt to restart to apply changes. If it doesn't come back online in 30 seconds, please manually restart the service." 
+    });
+
+    // 6. Optional: Trigger a graceful exit to allow PM2 or systemd to restart the process
+    // We delay this slightly to allow the response to reach the client
+    setTimeout(() => {
+      console.log("[Update] Restarting process to apply migrations and new code...");
+      process.exit(0);
+    }, 2000);
+
   } catch (e: any) {
-    console.error("Update failed:", e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[Update] Update failed:", e.message);
+    res.status(500).json({ success: false, error: `Update failed: ${e.message}` });
   }
 });
 
 app.post("/api/ha/sync-automations-scripts", async (req, res) => {
   try {
     console.log("Syncing automations and scripts from HA...");
-    const automations = await fetchHA('/api/states'); // We filter from states for domain automation/script
-    if (!automations || !Array.isArray(automations)) {
-      throw new Error("Failed to fetch states from HA");
+    const automations = await fetchHA('/api/states'); 
+    if (automations === null) {
+      throw new Error("Home Assistant URL or Access Token is not configured in Settings.");
+    }
+    if (!Array.isArray(automations)) {
+      throw new Error("Failed to fetch states from HA: Response was not an array.");
     }
 
     const filtered = automations.filter((s: any) => s.entity_id.startsWith('automation.') || s.entity_id.startsWith('script.'));

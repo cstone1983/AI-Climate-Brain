@@ -399,8 +399,8 @@ export default function App() {
     setIsSyncing(true);
     try {
       const res = await fetch('/api/ha/sync-automations-scripts', { method: 'POST' });
-      if (!res.ok) throw new Error("Failed to sync automations and scripts");
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to sync automations and scripts");
       alert(`Successfully synced ${data.count} automations and scripts for AI learning.`);
     } catch (e: any) {
       console.error("Sync failed", e);
