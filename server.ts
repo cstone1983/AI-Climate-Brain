@@ -22,6 +22,7 @@ const { Pool } = pg;
 
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
+let pgReady = false;
 const dbUrl = process.env.DATABASE_URL || "postgres://hb_user:homebrainpass@localhost:5432/home_brain";
 
 try {
@@ -32,12 +33,67 @@ try {
   });
   
   // Test connection immediately
-  pgPool.query('SELECT NOW()', (err, res) => {
+  pgPool.query('SELECT NOW()', async (err, res) => {
     if (err) {
       console.warn("Local PostgreSQL connection failed (expected if service not running yet):", err.message);
-      // We don't nullify pgPool here so it can retry or be used for migration later
     } else {
       console.log("PostgreSQL connected successfully to local service.");
+      // Initialize PostgreSQL schema
+      try {
+        await pgPool?.query(`
+          CREATE TABLE IF NOT EXISTS device_history (
+            id SERIAL PRIMARY KEY,
+            entity_id TEXT,
+            state TEXT,
+            attributes TEXT,
+            last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE TABLE IF NOT EXISTS schedules (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            description TEXT,
+            schedule_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        
+          CREATE TABLE IF NOT EXISTS tracked_entities (
+            entity_id TEXT PRIMARY KEY,
+            tracked BOOLEAN DEFAULT TRUE
+          );
+        
+          CREATE TABLE IF NOT EXISTS insights (
+            id SERIAL PRIMARY KEY,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        
+          CREATE TABLE IF NOT EXISTS ai_reasoning (
+            id SERIAL PRIMARY KEY,
+            context TEXT,
+            decision TEXT,
+            reasoning TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+          );
+        `);
+        console.log("PostgreSQL schema initialized successfully.");
+        pgReady = true;
+      } catch (schemaErr) {
+        console.error("Failed to initialize PostgreSQL schema:", schemaErr);
+      }
     }
   });
 } catch (e) {
@@ -50,7 +106,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = 80;
 
 app.use(express.json());
 
@@ -529,7 +585,7 @@ function connectToHA() {
         const insertHistory = db.prepare("INSERT OR IGNORE INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, datetime('now'))");
         const info = insertHistory.run(entity_id, state, attributes);
         
-        if (pgPool) {
+        if (pgPool && pgReady) {
           try {
             pgPool.query(
               "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
@@ -833,7 +889,7 @@ async function runDailyAnalysis() {
     
     // Save analysis
     if (result.schedule && result.schedule.name) {
-      if (pgPool) {
+      if (pgPool && pgReady) {
         try {
           await pgPool.query(
             "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
@@ -1122,7 +1178,7 @@ app.post("/api/auth/login", async (req, res) => {
   const dbType = getSetting("database_type", "sqlite");
   let user: any = null;
 
-  if (dbType === "postgresql" && pgPool) {
+  if (dbType === "postgresql" && pgPool && pgReady) {
     try {
       const result = await pgPool.query("SELECT * FROM users WHERE username = $1 AND password = $2", [username, password]);
       user = result.rows[0];
@@ -1506,7 +1562,7 @@ app.get("/api/history", async (req, res) => {
   const { entity_id, state, start_date, end_date, limit = 100, offset = 0 } = req.query;
   
   // Try PostgreSQL first if initialized
-  if (pgPool) {
+  if (pgPool && pgReady) {
     try {
       let query = "SELECT * FROM device_history WHERE 1=1";
       const params: any[] = [];
@@ -1895,7 +1951,7 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
 });
 
 app.get("/api/schedules", async (req, res) => {
-  if (pgPool) {
+  if (pgPool && pgReady) {
     try {
       const result = await pgPool.query("SELECT * FROM schedules ORDER BY created_at DESC");
       return res.json(result.rows);
