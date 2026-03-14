@@ -66,12 +66,14 @@ app.use(session({
 }));
 
 // Initialize SQLite Database
-const DB_PATH = "/data/home_brain.db";
+const DB_DIR = path.join(process.cwd(), "data");
+const DB_PATH = path.join(DB_DIR, "home_brain.db");
 const OLD_DB_PATH = path.join(process.cwd(), "home_brain.db");
 
-// Ensure /data exists
-if (!fs.existsSync("/data")) {
-  fs.mkdirSync("/data", { recursive: true });
+// Ensure data directory exists
+if (!fs.existsSync(DB_DIR)) {
+  console.log(`Creating data directory at ${DB_DIR}`);
+  fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
 // Move database if it exists in the old location
