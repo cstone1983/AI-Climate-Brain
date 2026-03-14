@@ -29,7 +29,13 @@ import {
   CheckCircle,
   AlertCircle,
   ArrowUpCircle,
-  Info
+  Info,
+  Search,
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  History as HistoryIcon
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -71,6 +77,16 @@ export default function App() {
   });
 
   const [history, setHistory] = useState<any[]>([]);
+  const [historyFilters, setHistoryFilters] = useState({
+    entity_id: '',
+    state: '',
+    start_date: '',
+    end_date: '',
+    limit: 100,
+    offset: 0
+  });
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [graphData, setGraphData] = useState<any[]>([]);
   const [graphTimeframe, setGraphTimeframe] = useState('24h');
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -90,6 +106,8 @@ export default function App() {
   const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
   const [isScanning, setIsScanning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState({ success: false, message: '' });
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
@@ -241,7 +259,6 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_ai_context: newContextString })
     });
-    toast({ title: "Note Added", description: "AI context note saved." });
   };
 
   const handleDeleteAiContextNote = async (id: string) => {
@@ -255,7 +272,6 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_ai_context: newContextString })
     });
-    toast({ title: "Note Deleted", description: "AI context note removed." });
   };
 
   const handleStartEditAiContextNote = (id: string, text: string) => {
@@ -277,7 +293,6 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_ai_context: newContextString })
     });
-    toast({ title: "Note Updated", description: "AI context note updated." });
   };
 
   const fetchSettings = async () => {
@@ -304,10 +319,38 @@ export default function App() {
     });
   };
 
-  const fetchHistory = async () => {
-    const res = await fetch('/api/history');
-    const data = await res.json();
-    setHistory(data);
+  const fetchHistory = async (filters = historyFilters) => {
+    setIsHistoryLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.entity_id) params.append('entity_id', filters.entity_id);
+      if (filters.state) params.append('state', filters.state);
+      if (filters.start_date) params.append('start_date', filters.start_date);
+      if (filters.end_date) params.append('end_date', filters.end_date);
+      params.append('limit', filters.limit.toString());
+      params.append('offset', filters.offset.toString());
+
+      const res = await fetch(`/api/history?${params.toString()}`);
+      const result = await res.json();
+      setHistory(result.data);
+      setHistoryTotal(result.total);
+    } catch (e) {
+      console.error("Failed to fetch history", e);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const handleHistoryFilterChange = (key: string, value: any) => {
+    const newFilters = { ...historyFilters, [key]: value, offset: 0 };
+    setHistoryFilters(newFilters);
+    fetchHistory(newFilters);
+  };
+
+  const handleHistoryPageChange = (newOffset: number) => {
+    const newFilters = { ...historyFilters, offset: newOffset };
+    setHistoryFilters(newFilters);
+    fetchHistory(newFilters);
   };
 
   const fetchSchedules = async () => {
@@ -500,6 +543,28 @@ export default function App() {
       alert("Sync failed: " + e.message);
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleMigrateDatabase = async () => {
+    if (!window.confirm("Are you sure you want to migrate to a local PostgreSQL service? This will move all your historical data to your local PostgreSQL database for faster access and better scalability. Ensure you have set up PostgreSQL and added DATABASE_URL to your environment.")) return;
+    
+    setIsMigrating(true);
+    setMigrationStatus({ success: false, message: 'Starting migration to local PostgreSQL... Please do not close this window.' });
+    
+    try {
+      const res = await fetch('/api/migrate-to-postgres', { method: 'POST' });
+      const data = await res.json();
+      
+      if (res.ok) {
+        setMigrationStatus({ success: true, message: 'Migration successful! Your data is now stored in your local PostgreSQL database.' });
+      } else {
+        setMigrationStatus({ success: false, message: `Migration failed: ${data.error || 'Unknown error'}` });
+      }
+    } catch (e: any) {
+      setMigrationStatus({ success: false, message: `Error: ${e.message}` });
+    } finally {
+      setIsMigrating(false);
     }
   };
 
@@ -1114,40 +1179,193 @@ export default function App() {
           )}
 
           {activeTab === 'history' && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Device History</CardTitle>
-                <CardDescription>Recent state changes pulled from Home Assistant</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm text-left">
-                    <thead className="text-xs text-slate-500 uppercase bg-slate-50">
-                      <tr>
-                        <th className="px-6 py-3">Time</th>
-                        <th className="px-6 py-3">Entity ID</th>
-                        <th className="px-6 py-3">State</th>
-                        <th className="px-6 py-3">Attributes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {history.map((item: any) => (
-                        <tr key={item.id} className="border-b border-slate-100">
-                          <td className="px-6 py-4">{new Date(item.last_changed + 'Z').toLocaleString()}</td>
-                          <td className="px-6 py-4 font-medium">{item.entity_id}</td>
-                          <td className="px-6 py-4">
-                            <span className="px-2 py-1 bg-slate-100 rounded-md text-slate-700">
-                              {item.state}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-slate-500 truncate max-w-xs">{item.attributes}</td>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <CardTitle>Device History Explorer</CardTitle>
+                      <CardDescription>Search and filter through all sensor data in the database.</CardDescription>
+                    </div>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => {
+                        const headers = ["Time", "Entity ID", "State", "Attributes"];
+                        const rows = history.map(item => [
+                          new Date(item.last_changed + (item.last_changed.includes('Z') ? '' : 'Z')).toLocaleString(),
+                          item.entity_id,
+                          item.state,
+                          item.attributes.replace(/"/g, '""')
+                        ]);
+                        const csvContent = [
+                          headers.join(","),
+                          ...rows.map(row => row.map(cell => `"${cell}"`).join(","))
+                        ].join("\n");
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const link = document.createElement("a");
+                        const url = URL.createObjectURL(blob);
+                        link.setAttribute("href", url);
+                        link.setAttribute("download", `history_export_${new Date().toISOString().split('T')[0]}.csv`);
+                        link.style.visibility = 'hidden';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                      }}
+                      disabled={history.length === 0}
+                      className="mr-2"
+                    >
+                      <Download className="h-4 w-4 mr-2" />
+                      Export CSV
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => fetchHistory()}
+                      disabled={isHistoryLoading}
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-2 ${isHistoryLoading ? 'animate-spin' : ''}`} />
+                      Refresh
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <div className="space-y-2">
+                      <Label>Search Entity ID</Label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                        <Input 
+                          placeholder="e.g. sensor.living_room" 
+                          className="pl-9"
+                          value={historyFilters.entity_id}
+                          onChange={(e) => handleHistoryFilterChange('entity_id', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>State</Label>
+                      <Input 
+                        placeholder="e.g. on, off, 72" 
+                        value={historyFilters.state}
+                        onChange={(e) => handleHistoryFilterChange('state', e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Start Date</Label>
+                      <Input 
+                        type="datetime-local" 
+                        value={historyFilters.start_date}
+                        onChange={(e) => handleHistoryFilterChange('start_date', e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>End Date</Label>
+                      <Input 
+                        type="datetime-local" 
+                        value={historyFilters.end_date}
+                        onChange={(e) => handleHistoryFilterChange('end_date', e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end mb-4">
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => {
+                        const resetFilters = {
+                          entity_id: '',
+                          state: '',
+                          start_date: '',
+                          end_date: '',
+                          limit: 100,
+                          offset: 0
+                        };
+                        setHistoryFilters(resetFilters);
+                        fetchHistory(resetFilters);
+                      }}
+                      className="text-slate-500 hover:text-slate-700"
+                    >
+                      <X className="h-4 w-4 mr-1" />
+                      Clear Filters
+                    </Button>
+                  </div>
+
+                  <div className="overflow-x-auto border rounded-lg">
+                    <table className="w-full text-sm text-left">
+                      <thead className="text-xs text-slate-500 uppercase bg-slate-50">
+                        <tr>
+                          <th className="px-6 py-3">Time</th>
+                          <th className="px-6 py-3">Entity ID</th>
+                          <th className="px-6 py-3">State</th>
+                          <th className="px-6 py-3">Attributes</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
+                      </thead>
+                      <tbody className="relative">
+                        {isHistoryLoading && (
+                          <tr className="absolute inset-0 bg-white/50 flex items-center justify-center z-10">
+                            <td colSpan={4} className="py-10 text-center">
+                              <RefreshCw className="h-8 w-8 animate-spin mx-auto text-slate-400" />
+                            </td>
+                          </tr>
+                        )}
+                        {history.length > 0 ? history.map((item: any) => (
+                          <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                            <td className="px-6 py-4 whitespace-nowrap text-slate-600">
+                              {new Date(item.last_changed + (item.last_changed.includes('Z') ? '' : 'Z')).toLocaleString()}
+                            </td>
+                            <td className="px-6 py-4 font-medium text-slate-900">{item.entity_id}</td>
+                            <td className="px-6 py-4">
+                              <span className="px-2 py-1 bg-slate-100 rounded-md text-slate-700 font-mono text-xs">
+                                {item.state}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-slate-500">
+                              <div className="max-w-xs truncate" title={item.attributes}>
+                                {item.attributes}
+                              </div>
+                            </td>
+                          </tr>
+                        )) : (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-10 text-center text-slate-400 italic">
+                              No records found matching your filters.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-6">
+                    <div className="text-sm text-slate-500">
+                      Showing {historyFilters.offset + 1} to {Math.min(historyFilters.offset + historyFilters.limit, historyTotal)} of {historyTotal} records
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        disabled={historyFilters.offset === 0 || isHistoryLoading}
+                        onClick={() => handleHistoryPageChange(Math.max(0, historyFilters.offset - historyFilters.limit))}
+                      >
+                        <ChevronLeft className="h-4 w-4 mr-1" />
+                        Previous
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        disabled={historyFilters.offset + historyFilters.limit >= historyTotal || isHistoryLoading}
+                        onClick={() => handleHistoryPageChange(historyFilters.offset + historyFilters.limit)}
+                      >
+                        Next
+                        <ChevronRight className="h-4 w-4 ml-1" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           )}
 
           {activeTab === 'schedules' && (
@@ -1379,10 +1597,10 @@ export default function App() {
 
                   <Card>
                     <CardHeader>
-                      <CardTitle>Data Management</CardTitle>
-                      <CardDescription>Configure how data is synchronized and displayed.</CardDescription>
+                      <CardTitle>Data Management & Migration</CardTitle>
+                      <CardDescription>Configure data sync and upgrade to a local SQL service.</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-4">
+                    <CardContent className="space-y-6">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label htmlFor="ai_context_window_hours">Context Sync Window (Hours: 1-24)</Label>
@@ -1408,6 +1626,39 @@ export default function App() {
                             <option value="30d">Last 30 Days</option>
                           </select>
                         </div>
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-100">
+                        <div className="flex items-center gap-2 mb-4">
+                          <Zap className="w-5 h-5 text-amber-500" />
+                          <h3 className="font-medium">Database Upgrade</h3>
+                        </div>
+                        <p className="text-sm text-slate-500 mb-4">
+                          Migrate your local SQLite database to a **Local PostgreSQL** service. This provides faster access 
+                          and better scalability for large history sets while keeping all data on your local machine.
+                        </p>
+                        
+                        {migrationStatus.message && (
+                          <div className={`p-3 mb-4 rounded-md text-sm ${migrationStatus.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
+                            {migrationStatus.message}
+                          </div>
+                        )}
+
+                        <Button 
+                          onClick={handleMigrateDatabase}
+                          disabled={isMigrating}
+                          className="w-full bg-amber-600 hover:bg-amber-700 text-white"
+                        >
+                          {isMigrating ? (
+                            <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <ArrowUpCircle className="w-4 h-4 mr-2" />
+                          )}
+                          Migrate to Local PostgreSQL
+                        </Button>
+                        <p className="text-[10px] text-slate-400 mt-2 text-center italic">
+                          * This is a one-time process. Ensure you have backed up your data if necessary.
+                        </p>
                       </div>
                     </CardContent>
                   </Card>

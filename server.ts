@@ -8,6 +8,33 @@ import { WebSocketServer, WebSocket } from "ws";
 import { exec } from "child_process";
 import util from "util";
 import { GoogleGenAI, Type } from "@google/genai";
+import pg from "pg";
+
+const { Pool } = pg;
+
+// Initialize PostgreSQL Pool
+let pgPool: pg.Pool | null = null;
+const dbUrl = process.env.DATABASE_URL || "postgres://hb_user:homebrainpass@localhost:5432/home_brain";
+
+try {
+  pgPool = new Pool({
+    connectionString: dbUrl,
+    // For local Ubuntu setup, we usually don't need SSL
+    ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+  });
+  
+  // Test connection immediately
+  pgPool.query('SELECT NOW()', (err, res) => {
+    if (err) {
+      console.warn("Local PostgreSQL connection failed (expected if service not running yet):", err.message);
+      // We don't nullify pgPool here so it can retry or be used for migration later
+    } else {
+      console.log("PostgreSQL connected successfully to local service.");
+    }
+  });
+} catch (e) {
+  console.error("PostgreSQL initialization failed:", e);
+}
 
 const execAsync = util.promisify(exec);
 
@@ -20,7 +47,21 @@ const PORT = 3000;
 app.use(express.json());
 
 // Initialize SQLite Database
-const db = new Database("home_brain.db");
+const DB_PATH = "/data/home_brain.db";
+const OLD_DB_PATH = path.join(process.cwd(), "home_brain.db");
+
+// Ensure /data exists
+if (!fs.existsSync("/data")) {
+  fs.mkdirSync("/data", { recursive: true });
+}
+
+// Move database if it exists in the old location
+if (fs.existsSync(OLD_DB_PATH) && !fs.existsSync(DB_PATH)) {
+  console.log(`Moving database from ${OLD_DB_PATH} to ${DB_PATH}`);
+  fs.renameSync(OLD_DB_PATH, DB_PATH);
+}
+
+const db = new Database(DB_PATH);
 
 const CURRENT_DB_VERSION = 2; // Increment this when adding new migrations
 
@@ -467,6 +508,17 @@ function connectToHA() {
         const insertHistory = db.prepare("INSERT OR IGNORE INTO device_history (entity_id, state, attributes, last_changed) VALUES (?, ?, ?, datetime('now'))");
         const info = insertHistory.run(entity_id, state, attributes);
         
+        if (pgPool) {
+          try {
+            pgPool.query(
+              "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
+              [entity_id, state, attributes, new Date().toISOString()]
+            );
+          } catch (e) {
+            console.error("Failed to save history to PostgreSQL:", e);
+          }
+        }
+        
         const newRecord = db.prepare("SELECT * FROM device_history WHERE id = ?").get(info.lastInsertRowid);
         
         // Real-time Self-Correction Logic
@@ -760,6 +812,16 @@ async function runDailyAnalysis() {
     
     // Save analysis
     if (result.schedule && result.schedule.name) {
+      if (pgPool) {
+        try {
+          await pgPool.query(
+            "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
+            [result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data), new Date().toISOString()]
+          );
+        } catch (e) {
+          console.error("Failed to save schedule to PostgreSQL:", e);
+        }
+      }
       const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data, created_at) VALUES (?, ?, ?, datetime('now'))");
       insertSchedule.run(result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data));
     }
@@ -1376,9 +1438,97 @@ app.post("/api/ha/sync-system-data", async (req, res) => {
   }
 });
 
-app.get("/api/history", (req, res) => {
-  const history = db.prepare("SELECT * FROM device_history ORDER BY last_changed DESC LIMIT 100").all();
-  res.json(history);
+app.get("/api/history", async (req, res) => {
+  const { entity_id, state, start_date, end_date, limit = 100, offset = 0 } = req.query;
+  
+  // Try PostgreSQL first if initialized
+  if (pgPool) {
+    try {
+      let query = "SELECT * FROM device_history WHERE 1=1";
+      const params: any[] = [];
+      let paramIdx = 1;
+
+      if (entity_id) {
+        query += ` AND entity_id LIKE $${paramIdx++}`;
+        params.push(`%${entity_id}%`);
+      }
+      
+      if (state) {
+        query += ` AND state = $${paramIdx++}`;
+        params.push(state);
+      }
+      
+      if (start_date) {
+        query += ` AND last_changed >= $${paramIdx++}`;
+        params.push(start_date);
+      }
+      
+      if (end_date) {
+        query += ` AND last_changed <= $${paramIdx++}`;
+        params.push(end_date);
+      }
+      
+      // Get total count
+      const countQuery = query.replace("SELECT *", "SELECT COUNT(*) as count");
+      const countRes = await pgPool.query(countQuery, params);
+      const totalCount = parseInt(countRes.rows[0].count);
+
+      query += ` ORDER BY last_changed DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`;
+      params.push(Number(limit), Number(offset));
+      
+      const result = await pgPool.query(query, params);
+
+      return res.json({
+        data: result.rows,
+        total: totalCount,
+        limit: Number(limit),
+        offset: Number(offset),
+        source: 'postgresql'
+      });
+    } catch (e) {
+      console.error("PostgreSQL history fetch failed, falling back to SQLite:", e);
+    }
+  }
+
+  // Fallback to SQLite
+  let query = "SELECT * FROM device_history WHERE 1=1";
+  const params: any[] = [];
+  
+  if (entity_id) {
+    query += " AND entity_id LIKE ?";
+    params.push(`%${entity_id}%`);
+  }
+  
+  if (state) {
+    query += " AND state = ?";
+    params.push(state);
+  }
+  
+  if (start_date) {
+    query += " AND last_changed >= ?";
+    params.push(start_date);
+  }
+  
+  if (end_date) {
+    query += " AND last_changed <= ?";
+    params.push(end_date);
+  }
+  
+  // Get total count for pagination
+  const countQuery = query.replace("SELECT *", "SELECT COUNT(*) as count");
+  const totalCount = (db.prepare(countQuery).get(...params) as any).count;
+  
+  query += " ORDER BY last_changed DESC LIMIT ? OFFSET ?";
+  params.push(Number(limit), Number(offset));
+  
+  const history = db.prepare(query).all(...params);
+  res.json({
+    data: history,
+    total: totalCount,
+    limit: Number(limit),
+    offset: Number(offset),
+    source: 'sqlite'
+  });
 });
 
 app.get("/api/history/graph", (req, res) => {
@@ -1507,7 +1657,8 @@ app.get("/api/ai/analysis-context", async (req, res) => {
     }
 
     const settingsRows = db.prepare("SELECT * FROM settings WHERE key = 'user_ai_context'").get() as any;
-    const userContext = settingsRows ? settingsRows.value : "";
+    const userContextRaw = settingsRows ? settingsRows.value : "";
+    const userContext = parseUserContext(userContextRaw);
 
     // Fetch latest system snapshot
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
@@ -1572,7 +1723,73 @@ app.post("/api/ai/real-time-control", async (req, res) => {
   }
 });
 
-app.get("/api/schedules", (req, res) => {
+app.post("/api/migrate-to-postgres", async (req, res) => {
+  if (!pgPool) {
+    return res.status(500).json({ error: "PostgreSQL not initialized. Please set DATABASE_URL in environment." });
+  }
+
+  try {
+    console.log("Starting migration to PostgreSQL...");
+    
+    // 1. Create tables in Postgres if they don't exist
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS device_history (
+        id SERIAL PRIMARY KEY,
+        entity_id TEXT,
+        state TEXT,
+        attributes TEXT,
+        last_changed TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS schedules (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        schedule_data TEXT,
+        created_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_history_entity_time ON device_history(entity_id, last_changed);
+    `);
+
+    // 2. Migrate History
+    const history = db.prepare("SELECT * FROM device_history").all() as any[];
+    console.log(`Migrating ${history.length} history records to Postgres...`);
+    
+    for (const record of history) {
+      await pgPool.query(
+        "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
+        [record.entity_id, record.state, record.attributes, record.last_changed]
+      );
+    }
+
+    // 3. Migrate Schedules
+    const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
+    console.log(`Migrating ${schedules.length} schedules to Postgres...`);
+    for (const s of schedules) {
+      await pgPool.query(
+        "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
+        [s.name, s.description, s.schedule_data, s.created_at]
+      );
+    }
+
+    // 4. Mark migration as complete in settings
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?").run("database_type", "postgresql", "postgresql");
+
+    res.json({ success: true, message: "Migration to local PostgreSQL complete" });
+  } catch (e: any) {
+    console.error("PostgreSQL Migration failed:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/schedules", async (req, res) => {
+  if (pgPool) {
+    try {
+      const result = await pgPool.query("SELECT * FROM schedules ORDER BY created_at DESC");
+      return res.json(result.rows);
+    } catch (e) {
+      console.error("PostgreSQL schedules fetch failed:", e);
+    }
+  }
   const schedules = db.prepare("SELECT * FROM schedules ORDER BY created_at DESC").all();
   res.json(schedules);
 });
