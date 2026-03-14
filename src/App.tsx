@@ -49,6 +49,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState('general');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [currentUser, setCurrentUser] = useState<{id: number, username: string, role: string} | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   
   const [settings, setSettings] = useState({
@@ -108,6 +109,8 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationStatus, setMigrationStatus] = useState({ success: false, message: '' });
+  const [migrationProgress, setMigrationProgress] = useState<string[]>([]);
+  const [updateProgress, setUpdateProgress] = useState<string[]>([]);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
@@ -115,6 +118,23 @@ export default function App() {
   const [newAiContextNote, setNewAiContextNote] = useState('');
   const [editingAiContextNoteId, setEditingAiContextNoteId] = useState<string | null>(null);
   const [editingAiContextNoteText, setEditingAiContextNoteText] = useState('');
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        const data = await res.json();
+        if (data.success) {
+          setCurrentUser(data.user);
+        }
+      } catch (e) {
+        console.error("Auth check failed", e);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    };
+    checkAuth();
+  }, []);
 
   useEffect(() => {
     if (currentUser) {
@@ -154,6 +174,10 @@ export default function App() {
           setIsSyncing(false);
           setSyncProgress({ progress: 100, entity: 'Complete' });
           fetchHistory();
+        } else if (message.type === 'UPDATE_PROGRESS') {
+          setUpdateProgress(prev => [...prev, message.message]);
+        } else if (message.type === 'MIGRATION_PROGRESS') {
+          setMigrationProgress(prev => [...prev, message.message]);
         }
       };
       
@@ -477,7 +501,12 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error("Logout failed", e);
+    }
     setCurrentUser(null);
     setLoginForm({ username: '', password: '' });
   };
@@ -551,6 +580,7 @@ export default function App() {
     
     setIsMigrating(true);
     setMigrationStatus({ success: false, message: 'Starting migration to local PostgreSQL... Please do not close this window.' });
+    setMigrationProgress([]);
     
     try {
       const res = await fetch('/api/migrate-to-postgres', { method: 'POST' });
@@ -660,6 +690,7 @@ export default function App() {
 
   const handleCheckUpdate = async () => {
     setUpdateStatus(prev => ({ ...prev, checking: true, message: '' }));
+    setUpdateProgress([]);
     try {
       const res = await fetch('/api/system/check-update');
       const data = await res.json();
@@ -699,6 +730,17 @@ export default function App() {
   });
 
   const uniqueDomains = Array.from(new Set(entities.map(e => e.domain))).sort();
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center space-y-4">
+          <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin" />
+          <p className="text-slate-500 font-medium">Loading Home Brain...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -1639,8 +1681,19 @@ export default function App() {
                         </p>
                         
                         {migrationStatus.message && (
-                          <div className={`p-3 mb-4 rounded-md text-sm ${migrationStatus.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
-                            {migrationStatus.message}
+                          <div className={`p-3 mb-4 rounded-md text-sm flex items-start gap-3 ${migrationStatus.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
+                            {migrationStatus.success ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                            <div className="flex-1">
+                              <p className="text-xs">{migrationStatus.message}</p>
+                              
+                              {migrationProgress.length > 0 && (
+                                <div className="mt-3 p-2 bg-black/5 rounded font-mono text-[10px] max-h-32 overflow-y-auto space-y-1">
+                                  {migrationProgress.map((p, i) => (
+                                    <div key={i} className={p.startsWith('ERROR') ? 'text-red-600' : ''}>{p}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
 
@@ -1891,8 +1944,19 @@ export default function App() {
                         
                         {updateStatus.message && (
                           <div className={`p-3 rounded-lg text-sm flex items-start gap-3 ${updateStatus.available ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
-                            <Info className="w-4 h-4 text-indigo-600 mt-0.5" />
-                            <p className="text-xs">{updateStatus.message}</p>
+                            <Info className="w-4 h-4 text-indigo-600 mt-0.5 flex-shrink-0" />
+                            <div className="flex-1">
+                              <p className="font-medium mb-1">{updateStatus.available ? 'Update Available' : 'Update Status'}</p>
+                              <p className="text-xs">{updateStatus.message}</p>
+                              
+                              {updateProgress.length > 0 && (
+                                <div className="mt-3 p-2 bg-black/5 rounded font-mono text-[10px] max-h-32 overflow-y-auto space-y-1">
+                                  {updateProgress.map((p, i) => (
+                                    <div key={i} className={p.startsWith('ERROR') ? 'text-red-600' : ''}>{p}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
 

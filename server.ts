@@ -9,6 +9,14 @@ import { exec } from "child_process";
 import util from "util";
 import { GoogleGenAI, Type } from "@google/genai";
 import pg from "pg";
+import session from "express-session";
+
+// Extend express-session to include user
+declare module 'express-session' {
+  interface SessionData {
+    user: { id: number; username: string; role: string };
+  }
+}
 
 const { Pool } = pg;
 
@@ -45,6 +53,17 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+app.use(session({
+  secret: process.env.SESSION_SECRET || "home-brain-secret-key",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  }
+}));
 
 // Initialize SQLite Database
 const DB_PATH = "/data/home_brain.db";
@@ -1095,14 +1114,50 @@ startRealTimeAIControl();
 
 // --- API Routes ---
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
-  const user = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?").get(username, password) as any;
+  
+  const dbType = getSetting("database_type", "sqlite");
+  let user: any = null;
+
+  if (dbType === "postgresql" && pgPool) {
+    try {
+      const result = await pgPool.query("SELECT * FROM users WHERE username = $1 AND password = $2", [username, password]);
+      user = result.rows[0];
+    } catch (e) {
+      console.error("PostgreSQL auth failed:", e);
+    }
+  }
+
+  if (!user) {
+    user = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?").get(username, password) as any;
+  }
+
   if (user) {
-    res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+    const userData = { id: user.id, username: user.username, role: user.role };
+    req.session.user = userData;
+    res.json({ success: true, user: userData });
   } else {
     res.status(401).json({ success: false, error: "Invalid credentials" });
   }
+});
+
+app.get("/api/auth/me", (req, res) => {
+  if (req.session.user) {
+    res.json({ success: true, user: req.session.user });
+  } else {
+    res.status(401).json({ success: false, error: "Not authenticated" });
+  }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      return res.status(500).json({ success: false, error: "Logout failed" });
+    }
+    res.clearCookie('connect.sid');
+    res.json({ success: true });
+  });
 });
 
 app.get("/api/users", (req, res) => {
@@ -1245,26 +1300,31 @@ app.post("/api/system/update", async (req, res) => {
       return res.status(400).json({ success: false, error: "System updates are disabled in this environment (not a git repository)." });
     }
 
-    console.log("[Update] Starting robust system update...");
+    const broadcastProgress = (message: string) => {
+      console.log(`[Update] ${message}`);
+      broadcastToFrontend({ type: 'UPDATE_PROGRESS', message });
+    };
+
+    broadcastProgress("Starting robust system update...");
     
     // 1. Stash any local changes to avoid pull conflicts
     try {
-      console.log("[Update] Stashing local changes...");
+      broadcastProgress("Stashing local changes...");
       await execAsync('git stash');
     } catch (e) {
-      console.log("[Update] No local changes to stash or stash failed (ignoring).");
+      broadcastProgress("No local changes to stash or stash failed (ignoring).");
     }
 
     // 2. Pull latest changes
-    console.log("[Update] Pulling latest changes from origin/main...");
+    broadcastProgress("Pulling latest changes from origin/main...");
     await execAsync('git pull origin main');
     
     // 3. Install dependencies
-    console.log("[Update] Installing dependencies...");
+    broadcastProgress("Installing dependencies (this may take a minute)...");
     await execAsync('npm install');
     
     // 4. Build the application
-    console.log("[Update] Building application...");
+    broadcastProgress("Building application (this may take a minute)...");
     await execAsync('npm run build');
     
     // 5. Verify build output exists
@@ -1273,21 +1333,21 @@ app.post("/api/system/update", async (req, res) => {
       throw new Error("Build failed: 'dist' directory not found after npm run build.");
     }
 
-    console.log("[Update] Update successful.");
+    broadcastProgress("Update successful.");
     res.json({ 
       success: true, 
       message: "Update pulled and built successfully! The server will now attempt to restart to apply changes. If it doesn't come back online in 30 seconds, please manually restart the service." 
     });
 
     // 6. Optional: Trigger a graceful exit to allow PM2 or systemd to restart the process
-    // We delay this slightly to allow the response to reach the client
     setTimeout(() => {
-      console.log("[Update] Restarting process to apply migrations and new code...");
+      broadcastProgress("Restarting process to apply migrations and new code...");
       process.exit(0);
     }, 2000);
 
   } catch (e: any) {
     console.error("[Update] Update failed:", e.message);
+    broadcastToFrontend({ type: 'UPDATE_PROGRESS', message: `ERROR: ${e.message}` });
     res.status(500).json({ success: false, error: `Update failed: ${e.message}` });
   }
 });
@@ -1728,8 +1788,13 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
     return res.status(500).json({ error: "PostgreSQL not initialized. Please set DATABASE_URL in environment." });
   }
 
+  const broadcastProgress = (message: string) => {
+    console.log(`[Migration] ${message}`);
+    broadcastToFrontend({ type: 'MIGRATION_PROGRESS', message });
+  };
+
   try {
-    console.log("Starting migration to PostgreSQL...");
+    broadcastProgress("Starting robust migration to PostgreSQL...");
     
     // 1. Create tables in Postgres if they don't exist
     await pgPool.query(`
@@ -1747,23 +1812,64 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
         schedule_data TEXT,
         created_at TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE,
+        password TEXT,
+        role TEXT
+      );
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_pg_history_entity_time ON device_history(entity_id, last_changed);
     `);
 
-    // 2. Migrate History
-    const history = db.prepare("SELECT * FROM device_history").all() as any[];
-    console.log(`Migrating ${history.length} history records to Postgres...`);
-    
-    for (const record of history) {
+    // 2. Migrate Settings
+    const settings = db.prepare("SELECT * FROM settings").all() as any[];
+    broadcastProgress(`Migrating ${settings.length} settings...`);
+    for (const s of settings) {
       await pgPool.query(
-        "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
-        [record.entity_id, record.state, record.attributes, record.last_changed]
+        "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2",
+        [s.key, s.value]
       );
     }
 
-    // 3. Migrate Schedules
+    // 3. Migrate Users
+    const users = db.prepare("SELECT * FROM users").all() as any[];
+    broadcastProgress(`Migrating ${users.length} users...`);
+    for (const u of users) {
+      await pgPool.query(
+        "INSERT INTO users (username, password, role) VALUES ($1, $2, $3) ON CONFLICT(username) DO NOTHING",
+        [u.username, u.password, u.role]
+      );
+    }
+
+    // 4. Migrate History
+    const history = db.prepare("SELECT * FROM device_history").all() as any[];
+    broadcastProgress(`Migrating ${history.length} history records...`);
+    
+    // Use a transaction for history to be faster
+    const client = await pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const record of history) {
+        await client.query(
+          "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
+          [record.entity_id, record.state, record.attributes, record.last_changed]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    // 5. Migrate Schedules
     const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
-    console.log(`Migrating ${schedules.length} schedules to Postgres...`);
+    broadcastProgress(`Migrating ${schedules.length} schedules...`);
     for (const s of schedules) {
       await pgPool.query(
         "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
@@ -1771,12 +1877,15 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
       );
     }
 
-    // 4. Mark migration as complete in settings
+    // 6. Mark migration as complete in settings
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?").run("database_type", "postgresql", "postgresql");
+    await pgPool.query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2", ["database_type", "postgresql"]);
 
-    res.json({ success: true, message: "Migration to local PostgreSQL complete" });
+    broadcastProgress("Migration to local PostgreSQL complete.");
+    res.json({ success: true, message: "Migration to local PostgreSQL complete. All users and settings have been moved." });
   } catch (e: any) {
     console.error("PostgreSQL Migration failed:", e);
+    broadcastToFrontend({ type: 'MIGRATION_PROGRESS', message: `ERROR: ${e.message}` });
     res.status(500).json({ error: e.message });
   }
 });
