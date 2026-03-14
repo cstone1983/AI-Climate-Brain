@@ -1305,50 +1305,52 @@ app.post("/api/system/update", async (req, res) => {
       broadcastToFrontend({ type: 'UPDATE_PROGRESS', message });
     };
 
-    broadcastProgress("Starting robust system update...");
+    broadcastProgress("Starting robust system update via script...");
     
-    // 1. Stash any local changes to avoid pull conflicts
-    try {
-      broadcastProgress("Stashing local changes...");
-      await execAsync('git stash');
-    } catch (e) {
-      broadcastProgress("No local changes to stash or stash failed (ignoring).");
-    }
+    // Execute the standalone script
+    const { spawn } = await import('child_process');
+    const child = spawn('npm', ['run', 'update-system']);
 
-    // 2. Pull latest changes
-    broadcastProgress("Pulling latest changes from origin/main...");
-    await execAsync('git pull origin main');
-    
-    // 3. Install dependencies
-    broadcastProgress("Installing dependencies (this may take a minute)...");
-    await execAsync('npm install');
-    
-    // 4. Build the application
-    broadcastProgress("Building application (this may take a minute)...");
-    await execAsync('npm run build');
-    
-    // 5. Verify build output exists
-    const distDir = path.join(__dirname, 'dist');
-    if (!fs.existsSync(distDir)) {
-      throw new Error("Build failed: 'dist' directory not found after npm run build.");
-    }
-
-    broadcastProgress("Update successful.");
-    res.json({ 
-      success: true, 
-      message: "Update pulled and built successfully! The server will now attempt to restart to apply changes. If it doesn't come back online in 30 seconds, please manually restart the service." 
+    child.stdout.on('data', (data) => {
+      const lines = data.toString().split('\n');
+      lines.forEach((line: string) => {
+        if (line.trim()) broadcastProgress(line.trim());
+      });
     });
 
-    // 6. Optional: Trigger a graceful exit to allow PM2 or systemd to restart the process
-    setTimeout(() => {
-      broadcastProgress("Restarting process to apply migrations and new code...");
-      process.exit(0);
-    }, 2000);
+    child.stderr.on('data', (data) => {
+      const lines = data.toString().split('\n');
+      lines.forEach((line: string) => {
+        if (line.trim()) broadcastProgress(`[Error] ${line.trim()}`);
+      });
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        broadcastProgress("Update script finished successfully.");
+        res.json({ 
+          success: true, 
+          message: "Update pulled and built successfully! The server will now attempt to restart." 
+        });
+
+        setTimeout(() => {
+          broadcastProgress("Restarting process...");
+          process.exit(0);
+        }, 2000);
+      } else {
+        broadcastProgress(`Update script failed with code ${code}`);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: `Update script failed with code ${code}` });
+        }
+      }
+    });
 
   } catch (e: any) {
     console.error("[Update] Update failed:", e.message);
     broadcastToFrontend({ type: 'UPDATE_PROGRESS', message: `ERROR: ${e.message}` });
-    res.status(500).json({ success: false, error: `Update failed: ${e.message}` });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: `Update failed: ${e.message}` });
+    }
   }
 });
 
