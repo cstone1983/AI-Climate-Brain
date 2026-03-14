@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Home, 
   Settings, 
@@ -118,6 +118,11 @@ export default function App() {
   const [newAiContextNote, setNewAiContextNote] = useState('');
   const [editingAiContextNoteId, setEditingAiContextNoteId] = useState<string | null>(null);
   const [editingAiContextNoteText, setEditingAiContextNoteText] = useState('');
+  
+  const historyFiltersRef = useRef(historyFilters);
+  useEffect(() => {
+    historyFiltersRef.current = historyFilters;
+  }, [historyFilters]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -157,7 +162,14 @@ export default function App() {
       ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === 'NEW_HISTORY') {
-          setHistory(prev => [message.data, ...prev].slice(0, 100));
+          const filters = historyFiltersRef.current;
+          const isRunningView = !filters.entity_id && !filters.state && !filters.start_date && !filters.end_date && filters.offset === 0;
+          
+          if (isRunningView) {
+            setHistory(prev => [message.data, ...prev].slice(0, 100));
+            setHistoryTotal(prev => prev + 1);
+          }
+          
           // If the new history event is for a graphed zone, refresh the graph data
           if (settings.dashboard_graph_zones && settings.dashboard_graph_zones.includes(message.data.entity_id)) {
             fetchGraphData(settings.dashboard_graph_zones, graphTimeframe);
