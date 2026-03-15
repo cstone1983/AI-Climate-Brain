@@ -43,6 +43,7 @@ import { Input } from './components/ui/input';
 import { Label } from './components/ui/label';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ScheduleCalendar } from './components/ScheduleCalendar';
+import { RoutineTimeline } from './components/RoutineTimeline';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -114,7 +115,7 @@ export default function App() {
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
-  const [scheduleViewMode, setScheduleViewMode] = useState<'calendar' | 'json'>('calendar');
+  const [scheduleViewMode, setScheduleViewMode] = useState<'timeline' | 'calendar' | 'json'>('timeline');
   const [newAiContextNote, setNewAiContextNote] = useState('');
   const [editingAiContextNoteId, setEditingAiContextNoteId] = useState<string | null>(null);
   const [editingAiContextNoteText, setEditingAiContextNoteText] = useState('');
@@ -1432,6 +1433,12 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <div className="flex bg-slate-200 p-1 rounded-lg">
                     <button 
+                      onClick={() => setScheduleViewMode('timeline')}
+                      className={`px-3 py-1 text-xs rounded-md transition-all ${scheduleViewMode === 'timeline' ? 'bg-white shadow-sm text-slate-900 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Timeline
+                    </button>
+                    <button 
                       onClick={() => setScheduleViewMode('calendar')}
                       className={`px-3 py-1 text-xs rounded-md transition-all ${scheduleViewMode === 'calendar' ? 'bg-white shadow-sm text-slate-900 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
                     >
@@ -1465,7 +1472,9 @@ export default function App() {
                     <CardContent className="p-6">
                       <p className="text-sm text-slate-600 mb-6">{schedule.description}</p>
                       
-                      {scheduleViewMode === 'calendar' ? (
+                      {scheduleViewMode === 'timeline' ? (
+                        <RoutineTimeline data={JSON.parse(schedule.schedule_data)} />
+                      ) : scheduleViewMode === 'calendar' ? (
                         <div className="h-[600px]">
                           <ScheduleCalendar data={JSON.parse(schedule.schedule_data)} />
                         </div>

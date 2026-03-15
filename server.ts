@@ -23,81 +23,85 @@ const { Pool } = pg;
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
-const dbUrl = process.env.DATABASE_URL || "postgres://hb_user:homebrainpass@localhost:5432/home_brain";
+const dbUrl = process.env.DATABASE_URL;
 
-try {
-  pgPool = new Pool({
-    connectionString: dbUrl,
-    // For local Ubuntu setup, we usually don't need SSL
-    ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
-  });
-  
-  // Test connection immediately
-  pgPool.query('SELECT NOW()', async (err, res) => {
-    if (err) {
-      console.warn("Local PostgreSQL connection failed (expected if service not running yet):", err.message);
-    } else {
-      console.log("PostgreSQL connected successfully to local service.");
-      // Initialize PostgreSQL schema
-      try {
-        await pgPool?.query(`
-          CREATE TABLE IF NOT EXISTS device_history (
-            id SERIAL PRIMARY KEY,
-            entity_id TEXT,
-            state TEXT,
-            attributes TEXT,
-            last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          );
+if (dbUrl) {
+  try {
+    pgPool = new Pool({
+      connectionString: dbUrl,
+      // For local Ubuntu setup, we usually don't need SSL
+      ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+    });
+    
+    // Test connection immediately
+    pgPool.query('SELECT NOW()', async (err, res) => {
+      if (err) {
+        console.warn("PostgreSQL connection failed (check DATABASE_URL):", err.message);
+      } else {
+        console.log("PostgreSQL connected successfully.");
+        // Initialize PostgreSQL schema
+        try {
+          await pgPool?.query(`
+            CREATE TABLE IF NOT EXISTS device_history (
+              id SERIAL PRIMARY KEY,
+              entity_id TEXT,
+              state TEXT,
+              attributes TEXT,
+              last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS schedules (
+              id SERIAL PRIMARY KEY,
+              name TEXT,
+              description TEXT,
+              schedule_data TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
           
-          CREATE TABLE IF NOT EXISTS schedules (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            description TEXT,
-            schedule_data TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          );
-        
-          CREATE TABLE IF NOT EXISTS tracked_entities (
-            entity_id TEXT PRIMARY KEY,
-            tracked BOOLEAN DEFAULT TRUE
-          );
-        
-          CREATE TABLE IF NOT EXISTS insights (
-            id SERIAL PRIMARY KEY,
-            content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          );
-        
-          CREATE TABLE IF NOT EXISTS ai_reasoning (
-            id SERIAL PRIMARY KEY,
-            context TEXT,
-            decision TEXT,
-            reasoning TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          );
+            CREATE TABLE IF NOT EXISTS tracked_entities (
+              entity_id TEXT PRIMARY KEY,
+              tracked BOOLEAN DEFAULT TRUE
+            );
+          
+            CREATE TABLE IF NOT EXISTS insights (
+              id SERIAL PRIMARY KEY,
+              content TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+          
+            CREATE TABLE IF NOT EXISTS ai_reasoning (
+              id SERIAL PRIMARY KEY,
+              context TEXT,
+              decision TEXT,
+              reasoning TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
-          CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE,
-            password TEXT,
-            role TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          );
+            CREATE TABLE IF NOT EXISTS users (
+              id SERIAL PRIMARY KEY,
+              username TEXT UNIQUE,
+              password TEXT,
+              role TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
-          CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-          );
-        `);
-        console.log("PostgreSQL schema initialized successfully.");
-        pgReady = true;
-      } catch (schemaErr) {
-        console.error("Failed to initialize PostgreSQL schema:", schemaErr);
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT
+            );
+          `);
+          console.log("PostgreSQL schema initialized successfully.");
+          pgReady = true;
+        } catch (schemaErr) {
+          console.error("Failed to initialize PostgreSQL schema:", schemaErr);
+        }
       }
-    }
-  });
-} catch (e) {
-  console.error("PostgreSQL initialization failed:", e);
+    });
+  } catch (e) {
+    console.error("PostgreSQL initialization failed:", e);
+  }
+} else {
+  console.log("PostgreSQL not configured (DATABASE_URL missing). Using SQLite only.");
 }
 
 const execAsync = util.promisify(exec);
