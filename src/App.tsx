@@ -53,10 +53,10 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   
-  const safeJsonParse = (str: string, fallback: any = []) => {
+  const safeJsonParse = (str: any, fallback: any = {}) => {
+    if (!str) return fallback;
     try {
-      const parsed = JSON.parse(str);
-      return Array.isArray(parsed) ? parsed : fallback;
+      return JSON.parse(str);
     } catch (e) {
       console.error("JSON parse error", e);
       return fallback;
@@ -185,7 +185,7 @@ export default function App() {
       
       ws.onmessage = (event) => {
         try {
-          const message = JSON.parse(event.data);
+          const message = safeJsonParse(event.data);
           if (message.type === 'NEW_HISTORY') {
           const filters = historyFiltersRef.current;
           const isRunningView = !filters.entity_id && !filters.state && !filters.start_date && !filters.end_date && filters.offset === 0;
@@ -300,7 +300,7 @@ export default function App() {
 
   const getAiContextNotes = () => {
     try {
-      const parsed = JSON.parse(settings.user_ai_context);
+      const parsed = safeJsonParse(settings.user_ai_context, []);
       if (Array.isArray(parsed)) return parsed;
       if (settings.user_ai_context.trim()) return [{ id: Date.now().toString(), text: settings.user_ai_context }];
       return [];
@@ -379,7 +379,7 @@ export default function App() {
       master_home: Number(data.climate_master_home) || 72,
       master_away: Number(data.climate_master_away) || 65,
       master_night: Number(data.climate_master_night) || 68,
-      zone_modifiers: data.climate_zone_modifiers ? JSON.parse(data.climate_zone_modifiers) : {}
+      zone_modifiers: data.climate_zone_modifiers ? safeJsonParse(data.climate_zone_modifiers) : {}
     });
   };
 
@@ -581,19 +581,13 @@ export default function App() {
     try {
       const res = await fetch('/api/ha/sync-system-data', { method: 'POST' });
       const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        if (!res.ok) {
-          if (res.status === 404) {
-            throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
-          }
-          throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+      const data = safeJsonParse(text);
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
         }
-        throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
+        throw new Error(data.error || `Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
       }
-      if (!res.ok) throw new Error(data.error || "Failed to sync system data");
       alert(data.message || "System data synced successfully!");
     } catch (e: any) {
       console.error("Sync failed", e);
@@ -608,19 +602,13 @@ export default function App() {
     try {
       const res = await fetch('/api/ha/sync-automations-scripts', { method: 'POST' });
       const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        if (!res.ok) {
-          if (res.status === 404) {
-            throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
-          }
-          throw new Error(`Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
+      const data = safeJsonParse(text);
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error(`Server route not found (404). The backend server process needs to be restarted to load the latest code.`);
         }
-        throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}`);
+        throw new Error(data.error || `Server error (${res.status}): ${text.substring(0, 200) || res.statusText}`);
       }
-      if (!res.ok) throw new Error(data.error || "Failed to sync automations and scripts");
       alert(`Successfully synced ${data.count} automations and scripts for AI learning.`);
     } catch (e: any) {
       console.error("Sync failed", e);
@@ -859,7 +847,7 @@ export default function App() {
         }
         
         try {
-          const attrs = JSON.parse(item.attributes);
+          const attrs = safeJsonParse(item.attributes);
           // 1. Try current_temperature (climate)
           // 2. Try state (sensor)
           const temp = attrs.current_temperature !== undefined 

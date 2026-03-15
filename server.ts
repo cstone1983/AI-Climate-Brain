@@ -30,6 +30,17 @@ function safeParse(str: any, fallback: any = {}) {
   }
 }
 
+function safeAiParse(text: string | undefined, fallback: any = {}) {
+  if (!text) return fallback;
+  try {
+    const cleaned = text.replace(/```json\n?|```/g, '').trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error("AI JSON parse error:", e);
+    return fallback;
+  }
+}
+
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
@@ -120,7 +131,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 80;
+const PORT = Number(process.env.PORT) || 80;
 
 app.use(express.json());
 
@@ -580,9 +591,8 @@ function connectToHA() {
     haWs = new WebSocket(wsUrl);
     
     haWs.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'auth_required') {
+      const msg = safeParse(data.toString());
+      if (msg.type === 'auth_required') {
         haWs?.send(JSON.stringify({ type: 'auth', access_token: ha_token }));
       } else if (msg.type === 'auth_ok') {
         console.log('Connected to HA WebSocket');
@@ -628,9 +638,6 @@ function connectToHA() {
         // Broadcast to frontend
         broadcastToFrontend({ type: 'NEW_HISTORY', data: newRecord });
       }
-    } catch (e) {
-      console.error("Failed to parse HA WebSocket message:", e);
-    }
     });
 
     haWs.on('error', (err) => {
@@ -903,12 +910,9 @@ async function runDailyAnalysis() {
       }
     });
 
-    let result;
-    try {
-      result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
-    } catch (parseErr) {
-      console.error("Failed to parse AI response:", response.text);
-      throw new Error("AI returned invalid JSON format. Please try again.");
+    const result = safeAiParse(response.text);
+    if (!result.schedule) {
+      throw new Error("AI returned invalid JSON format or missing schedule. Please try again.");
     }
     
     // Save analysis
@@ -1098,7 +1102,7 @@ async function executeRealTimeAIControl() {
       }
     });
 
-    const result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
+    const result = safeAiParse(response.text);
     
     // Task 4: Fail-Safe Defaults
     if (result.confidence_score === undefined || result.confidence_score === null) {
@@ -2257,7 +2261,7 @@ app.post("/api/ai/scan-entities", async (req, res) => {
       }
     });
 
-    const suggestions = JSON.parse((response.text || "[]").replace(/```json\n?|```/g, '').trim());
+    const suggestions = safeAiParse(response.text, []);
     res.json(suggestions);
 
   } catch (e: any) {
@@ -2390,7 +2394,11 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
+    const distPath = path.join(__dirname, "dist");
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
   }
 
   const server = app.listen(PORT, "0.0.0.0", async () => {
