@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Clock, Info, ChevronLeft, ChevronRight, Sun, Sunrise, Sunset, Moon, Coffee, Briefcase, GraduationCap, Home, User } from 'lucide-react';
+import { Clock, Info, ChevronLeft, ChevronRight, Sun, Sunrise, Sunset, Moon, Coffee, Briefcase, GraduationCap, Home, User, BrainCircuit } from 'lucide-react';
 
 interface ScheduleEvent {
   time: string;
@@ -8,6 +8,8 @@ interface ScheduleEvent {
   day?: string;
   date?: string;
   label?: string; // Optional label like "Morning Wakeup"
+  entity_id?: string;
+  state?: string;
 }
 
 interface RoutineTimelineProps {
@@ -44,7 +46,9 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
 
   // Sort events by time
   const sortedEvents = [...events].sort((a, b) => {
-    return a.time.localeCompare(b.time);
+    const timeA = a.time || '00:00';
+    const timeB = b.time || '00:00';
+    return timeA.localeCompare(timeB);
   });
 
   const handlePrevDay = () => {
@@ -91,6 +95,12 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
     return "Evening Routine";
   };
 
+  const [expandedReasoning, setExpandedReasoning] = useState<Record<number, boolean>>({});
+
+  const toggleReasoning = (idx: number) => {
+    setExpandedReasoning(prev => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
   return (
     <div className="flex flex-col space-y-6">
       {/* Day Selector */}
@@ -130,25 +140,49 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
                 <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-indigo-50 transition-colors">
                   {getEventIcon(event.time, event.action)}
                 </div>
-                <div>
-                  <h4 className="font-bold text-slate-900 leading-tight">{getFriendlyLabel(event)}</h4>
-                  <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">{event.time}</span>
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-bold text-slate-900 leading-tight truncate">{getFriendlyLabel(event)}</h4>
+                  <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">{event.time || 'TBD'}</span>
                 </div>
               </div>
-              <div className="relative">
-                <button className="p-1 text-slate-300 hover:text-indigo-500 transition-colors peer">
-                  <Info className="w-4 h-4" />
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => toggleReasoning(idx)}
+                  className={`p-1.5 rounded-lg transition-all ${expandedReasoning[idx] ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+                  title="Show AI Reasoning"
+                >
+                  <BrainCircuit className="w-4 h-4" />
                 </button>
-                <div className="hidden peer-hover:block absolute right-0 top-full mt-2 w-64 p-3 bg-slate-900 text-white text-[11px] rounded-xl shadow-2xl z-50 border border-white/10">
-                  <p className="font-bold mb-1 text-indigo-300">AI Reasoning:</p>
-                  {event.reasoning}
+                <div className="relative group/info">
+                  <button className="p-1.5 text-slate-300 hover:text-slate-500 transition-colors">
+                    <Info className="w-4 h-4" />
+                  </button>
+                  <div className="hidden group-hover/info:block absolute right-0 top-full mt-2 w-64 p-3 bg-slate-900 text-white text-[10px] rounded-xl shadow-2xl z-50 border border-white/10">
+                    <p className="font-bold mb-1 text-indigo-300 uppercase tracking-wider">Technical Details</p>
+                    <div className="space-y-1 opacity-80">
+                      <p><span className="text-slate-400">Entity:</span> {event.entity_id || 'N/A'}</p>
+                      <p><span className="text-slate-400">Target State:</span> {event.state || 'N/A'}</p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
             
-            <p className="text-sm text-slate-600 line-clamp-2 group-hover:line-clamp-none transition-all">
-              {event.action}
+            <p className="text-sm text-slate-600 mb-3">
+              {event.action || 'No action description provided.'}
             </p>
+
+            {expandedReasoning[idx] && (
+              <div className="mt-3 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 animate-in fade-in slide-in-from-top-1 duration-200">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <BrainCircuit className="w-3.5 h-3.5 text-indigo-600" />
+                  <span className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">AI Reasoning</span>
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed italic">
+                  "{event.reasoning || 'The AI did not provide specific reasoning for this event.'}"
+                </p>
+              </div>
+            )}
 
             {/* Connecting line for visual flow (only on desktop) */}
             {idx < sortedEvents.length - 1 && (

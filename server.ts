@@ -824,9 +824,14 @@ async function runDailyAnalysis() {
 
     const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
 
+    const now = new Date();
+    const currentTimeStr = now.toLocaleString('en-US', { timeZoneName: 'short' });
+
     const prompt = `
       You are an intelligent Home Assistant brain managing a complex multi-zone HVAC setup (scaling up to 7 zones) and lighting.
       Analyze the following smart home data from the last ${lookbackDays} days.
+      
+      CURRENT DATE AND TIME: ${currentTimeStr}
       
       CRITICAL GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
@@ -854,7 +859,7 @@ async function runDailyAnalysis() {
       {
         "insights": ["insight 1", ...],
         "reasoning": [{ "context": "...", "decision": "...", "reasoning": "..." }],
-        "schedule": { "name": "...", "description": "...", "schedule_data": [...] }
+        "schedule": { "name": "...", "description": "...", "schedule_data": [{ "day": "...", "time": "...", "action": "...", "entity_id": "...", "state": "...", "reasoning": "..." }] }
       }
     `;
 
@@ -892,13 +897,14 @@ async function runDailyAnalysis() {
                   items: {
                     type: Type.OBJECT,
                     properties: {
-                      day: { type: Type.STRING },
-                      time: { type: Type.STRING },
+                      day: { type: Type.STRING, description: "Day of the week (e.g., Monday)" },
+                      time: { type: Type.STRING, description: "Time in 24h format (e.g., 07:30)" },
+                      action: { type: Type.STRING, description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
                       entity_id: { type: Type.STRING },
                       state: { type: Type.STRING },
-                      reasoning: { type: Type.STRING }
+                      reasoning: { type: Type.STRING, description: "Specific reasoning for this individual event" }
                     },
-                    required: ["day", "time", "entity_id", "state"]
+                    required: ["day", "time", "action", "entity_id", "state"]
                   }
                 }
               },

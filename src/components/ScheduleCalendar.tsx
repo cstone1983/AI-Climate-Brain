@@ -106,7 +106,8 @@ export function ScheduleCalendar({ data = [] }: ScheduleCalendarProps) {
             {/* Events */}
             {events.map((event, idx) => {
               // Parse time (HH:mm)
-              const timeParts = event.time?.match(/(\d+):(\d+)/);
+              const timeStr = event.time || '00:00';
+              const timeParts = timeStr.match(/(\d+):(\d+)/);
               if (!timeParts) return null;
               
               const h = parseInt(timeParts[1]);
@@ -120,17 +121,17 @@ export function ScheduleCalendar({ data = [] }: ScheduleCalendarProps) {
                   style={{ top: `${top}px`, minHeight: '60px' }}
                 >
                   <div className="flex justify-between items-start mb-1">
-                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">{event.time}</span>
+                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">{timeStr}</span>
                     <div className="opacity-0 group-hover:opacity-100 transition-opacity">
                       <Info className="w-3 h-3 text-indigo-400" />
                     </div>
                   </div>
-                  <p className="text-xs font-semibold text-slate-800 leading-tight">{event.action}</p>
+                  <p className="text-xs font-semibold text-slate-800 leading-tight">{event.action || 'No action'}</p>
                   
                   {/* Tooltip-like reasoning */}
-                  <div className="hidden group-hover:block absolute left-0 top-full mt-2 w-full max-w-xs p-3 bg-slate-900 text-white text-[11px] rounded-xl shadow-2xl z-50 border border-white/10">
-                    <p className="font-bold mb-1 text-indigo-300">AI Reasoning:</p>
-                    {event.reasoning}
+                  <div className="hidden group-hover:block absolute left-0 top-full mt-2 w-full max-w-xs p-3 bg-slate-900 text-white text-[10px] rounded-xl shadow-2xl z-50 border border-white/10">
+                    <p className="font-bold mb-1 text-indigo-300 uppercase tracking-wider">AI Reasoning</p>
+                    <p className="italic opacity-90 leading-relaxed">"{event.reasoning || 'No reasoning provided.'}"</p>
                   </div>
                 </div>
               );

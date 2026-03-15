@@ -1532,32 +1532,73 @@ export default function App() {
           )}
 
           {activeTab === 'reasoning' && (
-            <div className="space-y-6">
-              <div>
-                <h2 className="text-lg font-semibold">AI Reasoning & Decisions</h2>
-                <p className="text-sm text-slate-500">Understand why the AI made specific scheduling decisions or real-time corrections.</p>
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-900 tracking-tight">AI Reasoning Engine</h2>
+                  <p className="text-slate-500 mt-1">Deep analysis of your home's patterns and scheduling logic.</p>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 rounded-full border border-indigo-100">
+                  <BrainCircuit className="w-4 h-4 text-indigo-600" />
+                  <span className="text-xs font-bold text-indigo-700 uppercase tracking-wider">Active Analysis</span>
+                </div>
               </div>
 
-              <div className="space-y-4">
+              <div className="grid gap-6">
                 {Array.isArray(reasoning) && reasoning.map((r: any, idx: number) => (
-                  <Card key={r.id || idx}>
-                    <CardHeader className="pb-2">
+                  <Card key={r.id || idx} className="group hover:shadow-xl transition-all duration-300 border-slate-200 overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <CardHeader className="pb-4 bg-slate-50/50">
                       <div className="flex justify-between items-start">
-                        <div>
-                          <CardDescription className="text-indigo-600 font-medium mb-1">{r.context}</CardDescription>
-                          <CardTitle className="text-lg">{r.decision}</CardTitle>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded">Context</span>
+                            <CardDescription className="text-slate-500 font-medium">{r.context}</CardDescription>
+                          </div>
+                          <CardTitle className="text-xl text-slate-900 group-hover:text-indigo-600 transition-colors">{r.decision}</CardTitle>
                         </div>
-                        <span className="text-xs text-slate-400">{formatDate(r.created_at)}</span>
+                        <div className="flex flex-col items-end">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Timestamp</span>
+                          <span className="text-xs font-mono text-slate-500">{formatDate(r.created_at)}</span>
+                        </div>
                       </div>
                     </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-slate-700">{r.reasoning}</p>
+                    <CardContent className="pt-6">
+                      <div className="relative">
+                        <div className="absolute -left-4 top-0 bottom-0 w-px bg-slate-100" />
+                        <div className="flex gap-4">
+                          <div className="mt-1">
+                            <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
+                              <Info className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-slate-700 leading-relaxed font-serif italic text-lg">
+                              "{r.reasoning}"
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
                 ))}
-                {reasoning.length === 0 && (
-                  <div className="text-center py-12 text-slate-500">
-                    No reasoning data available yet. Run the daily analysis or wait for a real-time event.
+                
+                {(!reasoning || reasoning.length === 0) && (
+                  <div className="text-center py-32 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+                    <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                      <BrainCircuit className="w-10 h-10 text-slate-300" />
+                    </div>
+                    <h3 className="text-xl font-bold text-slate-900 mb-2">No Reasoning Data</h3>
+                    <p className="text-slate-500 max-w-xs mx-auto">
+                      The AI reasoning engine hasn't recorded any decisions yet. 
+                      Try generating a new schedule to trigger an analysis.
+                    </p>
+                    <Button 
+                      onClick={() => setActiveTab('schedules')}
+                      className="mt-8 bg-indigo-600 hover:bg-indigo-700"
+                    >
+                      Go to Schedules
+                    </Button>
                   </div>
                 )}
               </div>
