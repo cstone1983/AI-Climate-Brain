@@ -858,8 +858,8 @@ async function runDailyAnalysis() {
       Return a JSON object with:
       {
         "insights": ["insight 1", ...],
-        "reasoning": [{ "context": "...", "decision": "...", "reasoning": "..." }],
-        "schedule": { "name": "...", "description": "...", "schedule_data": [{ "day": "...", "time": "...", "action": "...", "entity_id": "...", "state": "...", "reasoning": "..." }] }
+        "reasoning": [{ "context": "...", "decision": "...", "reasoning": "...", "evidence": "Specific data points observed..." }],
+        "schedule": { "name": "...", "description": "...", "schedule_data": [{ "day": "...", "time": "...", "action": "...", "entity_id": "...", "state": "...", "reasoning": "...", "evidence": "..." }] }
       }
     `;
 
@@ -882,9 +882,10 @@ async function runDailyAnalysis() {
                 properties: {
                   context: { type: Type.STRING },
                   decision: { type: Type.STRING },
-                  reasoning: { type: Type.STRING }
+                  reasoning: { type: Type.STRING },
+                  evidence: { type: Type.STRING, description: "Specific data points or history events that support this decision" }
                 },
-                required: ["context", "decision", "reasoning"]
+                required: ["context", "decision", "reasoning", "evidence"]
               }
             },
             schedule: {
@@ -902,9 +903,10 @@ async function runDailyAnalysis() {
                       action: { type: Type.STRING, description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
                       entity_id: { type: Type.STRING },
                       state: { type: Type.STRING },
-                      reasoning: { type: Type.STRING, description: "Specific reasoning for this individual event" }
+                      reasoning: { type: Type.STRING, description: "Specific reasoning for this individual event" },
+                      evidence: { type: Type.STRING, description: "The specific data point (e.g. motion sensor trigger time) that led to this schedule entry" }
                     },
-                    required: ["day", "time", "action", "entity_id", "state"]
+                    required: ["day", "time", "action", "entity_id", "state", "evidence"]
                   }
                 }
               },

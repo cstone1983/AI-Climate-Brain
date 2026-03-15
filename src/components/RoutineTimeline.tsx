@@ -10,6 +10,7 @@ interface ScheduleEvent {
   label?: string; // Optional label like "Morning Wakeup"
   entity_id?: string;
   state?: string;
+  evidence?: string;
 }
 
 interface RoutineTimelineProps {
@@ -178,9 +179,17 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
                   <BrainCircuit className="w-3.5 h-3.5 text-indigo-600" />
                   <span className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">AI Reasoning</span>
                 </div>
-                <p className="text-xs text-slate-700 leading-relaxed italic">
+                <p className="text-xs text-slate-700 leading-relaxed italic mb-2">
                   "{event.reasoning || 'The AI did not provide specific reasoning for this event.'}"
                 </p>
+                {event.evidence && (
+                  <div className="mt-2 pt-2 border-t border-indigo-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Evidence / Source Data</p>
+                    <p className="text-[11px] text-indigo-900 font-medium bg-white/50 p-1.5 rounded-lg border border-indigo-50/50">
+                      {event.evidence}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

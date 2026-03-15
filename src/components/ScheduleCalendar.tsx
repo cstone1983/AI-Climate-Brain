@@ -7,6 +7,7 @@ interface ScheduleEvent {
   reasoning: string;
   day?: string;
   date?: string;
+  evidence?: string;
 }
 
 interface ScheduleCalendarProps {
@@ -131,7 +132,13 @@ export function ScheduleCalendar({ data = [] }: ScheduleCalendarProps) {
                   {/* Tooltip-like reasoning */}
                   <div className="hidden group-hover:block absolute left-0 top-full mt-2 w-full max-w-xs p-3 bg-slate-900 text-white text-[10px] rounded-xl shadow-2xl z-50 border border-white/10">
                     <p className="font-bold mb-1 text-indigo-300 uppercase tracking-wider">AI Reasoning</p>
-                    <p className="italic opacity-90 leading-relaxed">"{event.reasoning || 'No reasoning provided.'}"</p>
+                    <p className="italic opacity-90 leading-relaxed mb-2">"{event.reasoning || 'No reasoning provided.'}"</p>
+                    {event.evidence && (
+                      <div className="pt-2 border-t border-white/10">
+                        <p className="font-bold mb-1 text-emerald-400 uppercase tracking-wider">Evidence</p>
+                        <p className="text-slate-300">{event.evidence}</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               );

@@ -1573,9 +1573,20 @@ export default function App() {
                             </div>
                           </div>
                           <div className="flex-1">
-                            <p className="text-slate-700 leading-relaxed font-serif italic text-lg">
+                            <p className="text-slate-700 leading-relaxed font-serif italic text-lg mb-4">
                               "{r.reasoning}"
                             </p>
+                            {r.evidence && (
+                              <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <Activity className="w-3.5 h-3.5 text-emerald-500" />
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Evidence & Data Points</span>
+                                </div>
+                                <p className="text-sm text-slate-600 font-medium">
+                                  {r.evidence}
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
