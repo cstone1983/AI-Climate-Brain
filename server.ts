@@ -20,6 +20,16 @@ declare module 'express-session' {
 
 const { Pool } = pg;
 
+function safeParse(str: any, fallback: any = {}) {
+  if (!str) return fallback;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    console.error("JSON parse error in server:", e);
+    return fallback;
+  }
+}
+
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
@@ -149,7 +159,7 @@ const CURRENT_DB_VERSION = 2; // Increment this when adding new migrations
 function parseUserContext(rawValue: string): string {
   if (!rawValue) return "";
   try {
-    const parsed = JSON.parse(rawValue);
+    const parsed = safeParse(rawValue);
     if (Array.isArray(parsed)) {
       return parsed.map((n: any, i: number) => `${i + 1}. ${n.text}`).join('\n');
     }
@@ -570,8 +580,9 @@ function connectToHA() {
     haWs = new WebSocket(wsUrl);
     
     haWs.on('message', (data) => {
-      const msg = JSON.parse(data.toString());
-      if (msg.type === 'auth_required') {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'auth_required') {
         haWs?.send(JSON.stringify({ type: 'auth', access_token: ha_token }));
       } else if (msg.type === 'auth_ok') {
         console.log('Connected to HA WebSocket');
@@ -617,6 +628,9 @@ function connectToHA() {
         // Broadcast to frontend
         broadcastToFrontend({ type: 'NEW_HISTORY', data: newRecord });
       }
+    } catch (e) {
+      console.error("Failed to parse HA WebSocket message:", e);
+    }
     });
 
     haWs.on('error', (err) => {
@@ -799,7 +813,7 @@ async function runDailyAnalysis() {
     const userContext = parseUserContext(userContextRaw);
 
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
-    const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
+    const systemSnapshot = snapshotRow ? safeParse(snapshotRow.data) : {};
 
     const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
 
@@ -1011,7 +1025,7 @@ async function executeRealTimeAIControl() {
     `).all(...trackedIds) as any[] : [];
 
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
-    const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : {};
+    const systemSnapshot = snapshotRow ? safeParse(snapshotRow.data) : {};
 
     const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
 
@@ -1732,7 +1746,7 @@ app.get("/api/history/graph", (req, res) => {
     return res.json([]);
   }
   
-  const zones = JSON.parse(zonesParam);
+  const zones = safeParse(zonesParam, []);
   if (!Array.isArray(zones) || zones.length === 0) {
     return res.json([]);
   }
@@ -1781,7 +1795,7 @@ app.get("/api/ai/real-time-context", async (req, res) => {
 
     // Fetch latest system snapshot
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
-    const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : null;
+    const systemSnapshot = snapshotRow ? safeParse(snapshotRow.data, null) : null;
 
     res.json({
       trackedContext,
@@ -1855,7 +1869,7 @@ app.get("/api/ai/analysis-context", async (req, res) => {
 
     // Fetch latest system snapshot
     const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
-    const systemSnapshot = snapshotRow ? JSON.parse(snapshotRow.data) : null;
+    const systemSnapshot = snapshotRow ? safeParse(snapshotRow.data, null) : null;
 
     res.json({
       states,
