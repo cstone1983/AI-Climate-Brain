@@ -41,6 +41,24 @@ function safeAiParse(text: string | undefined, fallback: any = {}) {
   }
 }
 
+function filterTransitions(history: any[]) {
+  const transitions: any[] = [];
+  const lastStates: Record<string, string> = {};
+
+  history.forEach(entry => {
+    if (lastStates[entry.entity_id] !== entry.state) {
+      transitions.push({
+        entity_id: entry.entity_id,
+        state: entry.state,
+        last_changed: entry.last_changed
+      });
+      lastStates[entry.entity_id] = entry.state;
+    }
+  });
+
+  return transitions;
+}
+
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
@@ -827,6 +845,8 @@ async function runDailyAnalysis() {
     const now = new Date();
     const currentTimeStr = now.toLocaleString('en-US', { timeZoneName: 'short' });
 
+    const filteredHistory = filterTransitions(history);
+
     const prompt = `
       You are an intelligent Home Assistant brain managing a complex multi-zone HVAC setup (scaling up to 7 zones) and lighting.
       Analyze the following smart home data from the last ${lookbackDays} days.
@@ -845,6 +865,7 @@ async function runDailyAnalysis() {
       9. SCRIPT EXECUTION PRIORITY: Prioritize triggering existing Home Assistant scripts or automations using the Long-Lived Access Token, rather than attempting to micro-manage devices directly.
       10. SCOPE EXCLUSION: Do not include or plan for any solar-production logic or solar-weighted algorithms at this time. If Home Assistant disconnects, do not attempt to build hardware failsafes; simply log the error and halt commands.
       11. HIGH PRIORITY CONTEXT: Pay extremely close attention to the USER PROVIDED CONTEXT notes below. These notes represent explicit user instructions, overrides, or upcoming events. Also, any notes or descriptions attached to specific devices must be treated as high priority constraints.
+      12. TRANSITIONAL DATA ANALYSIS: Focus on state changes (transitions) rather than static states. For example, the time a person changes from 'home' to 'not_home' is the departure time. The time a device changes from 'off' to 'on' is the activation time. Use these transition timestamps to build your schedule, as they represent the actual events. Ignore long periods of static state; only the points of change matter for identifying routine timings.
       
       USER PROVIDED CONTEXT:
       ${userContext}
@@ -852,7 +873,7 @@ async function runDailyAnalysis() {
       SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       Tracked Devices: ${JSON.stringify(trackedRows)}
-      Recent History (Last ${lookbackDays} Days): ${JSON.stringify(history.slice(-1000))}
+      Recent History (State Transitions Only): ${JSON.stringify(filteredHistory.slice(-1000))}
       Logbook Events (Last ${lookbackDays} Days): ${JSON.stringify(logbook.slice(-500))}
       
       Return a JSON object with:
