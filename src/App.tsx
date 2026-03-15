@@ -132,7 +132,10 @@ export default function App() {
     message: '', 
     updating: false,
     localHash: '',
-    remoteHash: ''
+    remoteHash: '',
+    currentBranch: '',
+    remoteUrl: '',
+    remotes: ''
   });
   const [deviceSearch, setDeviceSearch] = useState('');
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('all');
@@ -762,7 +765,10 @@ export default function App() {
         available: data.updateAvailable, 
         message: data.message,
         localHash: data.localHash || '',
-        remoteHash: data.remoteHash || ''
+        remoteHash: data.remoteHash || '',
+        currentBranch: data.currentBranch || '',
+        remoteUrl: data.remoteUrl || '',
+        remotes: data.remotes || ''
       }));
     } catch (e) {
       setUpdateStatus(prev => ({ ...prev, checking: false, message: 'Failed to check for updates.' }));
@@ -2099,9 +2105,21 @@ export default function App() {
                               <p className="font-medium mb-1">{updateStatus.available ? 'Update Available' : 'Update Status'}</p>
                               <p className="text-xs">{updateStatus.message}</p>
                               {updateStatus.localHash && updateStatus.remoteHash && (
-                                <div className="mt-2 flex gap-4 text-[10px] font-mono opacity-70">
-                                  <span>Local: {updateStatus.localHash}</span>
-                                  <span>Remote: {updateStatus.remoteHash}</span>
+                                <div className="mt-2 space-y-1">
+                                  <div className="flex gap-4 text-[10px] font-mono opacity-70">
+                                    <span>Local: {updateStatus.localHash}</span>
+                                    <span>Remote: {updateStatus.remoteHash}</span>
+                                  </div>
+                                  <div className="flex flex-col text-[10px] font-mono opacity-50">
+                                    <span>Current Branch: {updateStatus.currentBranch}</span>
+                                    <span>Remote URL: {updateStatus.remoteUrl}</span>
+                                    {updateStatus.remotes && (
+                                      <div className="mt-1 pt-1 border-t border-slate-200">
+                                        <p className="font-semibold mb-0.5">Configured Remotes:</p>
+                                        <pre className="whitespace-pre-wrap">{updateStatus.remotes}</pre>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                               

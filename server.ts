@@ -1558,6 +1558,19 @@ app.get("/api/system/check-update", async (req, res) => {
 
     const branch = getSetting("github_branch", "main");
     
+    // Diagnostic info
+    let currentBranch = "unknown";
+    let remoteUrl = "unknown";
+    let remotes = "unknown";
+    try {
+      const branchRes = await execAsync('git rev-parse --abbrev-ref HEAD');
+      currentBranch = branchRes.stdout.trim();
+      const remoteRes = await execAsync('git remote get-url origin');
+      remoteUrl = remoteRes.stdout.trim();
+      const remotesRes = await execAsync('git remote -v');
+      remotes = remotesRes.stdout.trim();
+    } catch (e) {}
+
     // Check if we are inside a work tree
     try {
       await execAsync('git rev-parse --is-inside-work-tree');
@@ -1598,12 +1611,18 @@ app.get("/api/system/check-update", async (req, res) => {
         updateAvailable: true, 
         message: `A new version is available on GitHub (branch: ${branch}).`,
         localHash: local.stdout.trim().substring(0, 7),
-        remoteHash: remoteHash.substring(0, 7)
+        remoteHash: remoteHash.substring(0, 7),
+        currentBranch,
+        remoteUrl,
+        remotes
       });
     } else {
       res.json({ 
         updateAvailable: false, 
-        message: `System is up to date (Branch: ${branch}, Commit: ${remoteHash.substring(0, 7)}).` 
+        message: `System is up to date (Branch: ${branch}, Commit: ${remoteHash.substring(0, 7)}).`,
+        currentBranch,
+        remoteUrl,
+        remotes
       });
     }
   } catch (e: any) {
