@@ -90,6 +90,7 @@ export default function App() {
     dashboard_default_timeframe: '24h',
     ghost_mode_hvac: 'true',
     ghost_mode_whole_home: 'true',
+    github_branch: 'main',
     database_type: 'sqlite',
     gemini_api_key: ''
   });
@@ -125,7 +126,14 @@ export default function App() {
   const [occupancyRoster, setOccupancyRoster] = useState<any[]>([]);
   const [newOccupancy, setNewOccupancy] = useState({ name: '', entity_id: '' });
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'viewer' });
-  const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, message: '', updating: false });
+  const [updateStatus, setUpdateStatus] = useState({ 
+    checking: false, 
+    available: false, 
+    message: '', 
+    updating: false,
+    localHash: '',
+    remoteHash: ''
+  });
   const [deviceSearch, setDeviceSearch] = useState('');
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('all');
   const [deviceStatusFilter, setDeviceStatusFilter] = useState('all');
@@ -748,7 +756,14 @@ export default function App() {
     try {
       const res = await fetch('/api/system/check-update');
       const data = await res.json();
-      setUpdateStatus(prev => ({ ...prev, checking: false, available: data.updateAvailable, message: data.message }));
+      setUpdateStatus(prev => ({ 
+        ...prev, 
+        checking: false, 
+        available: data.updateAvailable, 
+        message: data.message,
+        localHash: data.localHash || '',
+        remoteHash: data.remoteHash || ''
+      }));
     } catch (e) {
       setUpdateStatus(prev => ({ ...prev, checking: false, message: 'Failed to check for updates.' }));
     }
@@ -1791,6 +1806,16 @@ export default function App() {
                             <option value="30d">Last 30 Days</option>
                           </select>
                         </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="github_branch">GitHub Update Branch</Label>
+                          <Input 
+                            id="github_branch"
+                            value={settings.github_branch || 'main'}
+                            onChange={e => setSettings({...settings, github_branch: e.target.value})}
+                            placeholder="main"
+                          />
+                          <p className="text-[10px] text-slate-400 italic">The branch to pull updates from (default: main).</p>
+                        </div>
                       </div>
 
                       {settings.database_type !== 'postgresql' && (
@@ -2073,6 +2098,12 @@ export default function App() {
                             <div className="flex-1">
                               <p className="font-medium mb-1">{updateStatus.available ? 'Update Available' : 'Update Status'}</p>
                               <p className="text-xs">{updateStatus.message}</p>
+                              {updateStatus.localHash && updateStatus.remoteHash && (
+                                <div className="mt-2 flex gap-4 text-[10px] font-mono opacity-70">
+                                  <span>Local: {updateStatus.localHash}</span>
+                                  <span>Remote: {updateStatus.remoteHash}</span>
+                                </div>
+                              )}
                               
                               {updateProgress.length > 0 && (
                                 <div className="mt-3 p-2 bg-black/5 rounded font-mono text-[10px] max-h-32 overflow-y-auto space-y-1">

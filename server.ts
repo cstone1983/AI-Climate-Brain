@@ -343,6 +343,7 @@ function initializeDatabase() {
   insertSetting.run("dashboard_default_timeframe", "24h");
   insertSetting.run("ghost_mode_hvac", "true");
   insertSetting.run("ghost_mode_whole_home", "true");
+  insertSetting.run("github_branch", "main");
 
   const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)");
   insertUser.run("admin", "admin", "admin");
@@ -1545,27 +1546,69 @@ app.post("/api/settings", async (req, res) => {
 // System Update Endpoints
 app.get("/api/system/check-update", async (req, res) => {
   try {
-    // Check if we are in a git repository
-    if (!fs.existsSync(path.join(__dirname, '.git'))) {
-      return res.json({ updateAvailable: false, message: "System updates are disabled in this environment (not a git repository)." });
+    const projectRoot = process.cwd();
+    const gitDir = path.join(projectRoot, '.git');
+    
+    if (!fs.existsSync(gitDir)) {
+      return res.json({ 
+        updateAvailable: false, 
+        message: "System updates are disabled in this environment (not a git repository). To enable updates, ensure the application was installed via 'git clone'." 
+      });
     }
 
-    await execAsync('git rev-parse --is-inside-work-tree');
+    const branch = getSetting("github_branch", "main");
+    
+    // Check if we are inside a work tree
+    try {
+      await execAsync('git rev-parse --is-inside-work-tree');
+    } catch (e) {
+      return res.json({ updateAvailable: false, message: "Not inside a git work tree." });
+    }
     
     // Fetch latest from origin
-    await execAsync('git fetch origin');
+    console.log(`[Update Check] Fetching from origin ${branch}...`);
+    try {
+      await execAsync('git fetch origin');
+    } catch (e: any) {
+      return res.json({ updateAvailable: false, message: `Failed to fetch from origin: ${e.message}` });
+    }
     
     const local = await execAsync('git rev-parse HEAD');
-    const remote = await execAsync('git rev-parse @{u}');
     
-    if (local.stdout.trim() !== remote.stdout.trim()) {
-      res.json({ updateAvailable: true, message: "A new version is available on GitHub." });
+    // Try to get remote hash for the configured branch
+    let remoteHash = "";
+    try {
+      const remoteRes = await execAsync(`git rev-parse origin/${branch}`);
+      remoteHash = remoteRes.stdout.trim();
+    } catch (e) {
+      // Fallback to upstream if origin/branch fails
+      try {
+        const upstreamRes = await execAsync('git rev-parse @{u}');
+        remoteHash = upstreamRes.stdout.trim();
+      } catch (uErr: any) {
+        return res.json({ 
+          updateAvailable: false, 
+          message: `Could not determine remote version. Ensure you are on a branch that tracks origin/${branch} or has an upstream set.` 
+        });
+      }
+    }
+    
+    if (local.stdout.trim() !== remoteHash) {
+      res.json({ 
+        updateAvailable: true, 
+        message: `A new version is available on GitHub (branch: ${branch}).`,
+        localHash: local.stdout.trim().substring(0, 7),
+        remoteHash: remoteHash.substring(0, 7)
+      });
     } else {
-      res.json({ updateAvailable: false, message: "System is up to date." });
+      res.json({ 
+        updateAvailable: false, 
+        message: `System is up to date (Branch: ${branch}, Commit: ${remoteHash.substring(0, 7)}).` 
+      });
     }
   } catch (e: any) {
     console.error("Update check failed:", e.message);
-    res.json({ updateAvailable: false, message: "Could not check for updates. Ensure this is a git repository connected to origin." });
+    res.json({ updateAvailable: false, message: `Update check failed: ${e.message}` });
   }
 });
 
@@ -1581,11 +1624,14 @@ app.post("/api/system/update", async (req, res) => {
       broadcastToFrontend({ type: 'UPDATE_PROGRESS', message });
     };
 
-    broadcastProgress("Starting robust system update via script...");
+    const branch = getSetting("github_branch", "main");
+    broadcastProgress(`Starting robust system update for branch: ${branch}...`);
     
     // Execute the standalone script
     const { spawn } = await import('child_process');
-    const child = spawn('npm', ['run', 'update-system']);
+    const child = spawn('npm', ['run', 'update-system'], {
+      env: { ...process.env, GITHUB_BRANCH: branch }
+    });
 
     child.stdout.on('data', (data) => {
       const lines = data.toString().split('\n');

@@ -25,8 +25,9 @@ async function runUpdate() {
     }
 
     // 2. Pull latest changes
-    console.log("[Update Script] Pulling latest changes from origin main...");
-    const pullResult = await execAsync('git pull origin main');
+    const branch = process.env.GITHUB_BRANCH || 'main';
+    console.log(`[Update Script] Pulling latest changes from origin ${branch}...`);
+    const pullResult = await execAsync(`git pull origin ${branch}`);
     console.log(pullResult.stdout);
 
     // 3. Install dependencies
