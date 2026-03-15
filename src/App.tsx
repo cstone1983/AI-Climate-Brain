@@ -82,7 +82,7 @@ export default function App() {
     user_ai_context: '',
     dashboard_graph_zones: '[]',
     ai_realtime_interval: '5',
-    ai_lookback_days: '14',
+    ai_lookback_days: '60',
     ai_context_window_hours: '2',
     ai_model: 'gemini-3-flash-preview',
     climate_abs_min: '55',
@@ -274,6 +274,15 @@ export default function App() {
       body: JSON.stringify(newOccupancy)
     });
     setNewOccupancy({ name: '', entity_id: '' });
+    fetchOccupancy();
+  };
+
+  const handleToggleOccupancyTrack = async (id: number, currentTracked: boolean) => {
+    await fetch(`/api/occupancy/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_tracked: !currentTracked })
+    });
     fetchOccupancy();
   };
 
@@ -1124,6 +1133,7 @@ export default function App() {
                             <th className="px-4 py-3">Name</th>
                             <th className="px-4 py-3">Entity ID</th>
                             <th className="px-4 py-3">Status</th>
+                            <th className="px-4 py-3">Track for AI</th>
                             <th className="px-4 py-3 text-right">Actions</th>
                           </tr>
                         </thead>
@@ -1136,6 +1146,14 @@ export default function App() {
                                 <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${person.status === 'home' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                                   {person.status}
                                 </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <button
+                                  onClick={() => handleToggleOccupancyTrack(person.id, person.is_tracked !== 0)}
+                                  className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none ${person.is_tracked !== 0 ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                                >
+                                  <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${person.is_tracked !== 0 ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </button>
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <Button variant="ghost" size="icon" onClick={() => handleDeleteOccupancy(person.id)} className="text-rose-500 hover:text-rose-700 hover:bg-rose-50">
@@ -1459,7 +1477,7 @@ export default function App() {
             <div className="space-y-6">
               <div className="flex justify-between items-center">
                 <div>
-                  <h2 className="text-lg font-semibold">Rolling 14-Day Schedules</h2>
+                  <h2 className="text-lg font-semibold">Rolling {settings.ai_lookback_days}-Day Schedules</h2>
                   <p className="text-sm text-slate-500">Multi-zone predictive schedules based on inferred occupancy and patterns.</p>
                 </div>
                 <div className="flex items-center gap-3">

@@ -271,7 +271,8 @@ function initializeDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         entity_id TEXT,
-        status TEXT DEFAULT 'unknown'
+        status TEXT DEFAULT 'unknown',
+        is_tracked INTEGER DEFAULT 1
       );
     
       CREATE TABLE IF NOT EXISTS logbook_history (
@@ -313,21 +314,17 @@ function initializeDatabase() {
 
   // 4. Sequential Migrations
   if (currentVersion < 2) {
-    console.log("Applying Migration: Version 2 (Adding notes to tracked_entities and unique index)");
+    // ... existing migration 2 ...
+  }
+
+  if (currentVersion < 3) {
+    console.log("Applying Migration: Version 3 (Adding is_tracked to occupancy_roster)");
     try {
-      db.exec("ALTER TABLE tracked_entities ADD COLUMN notes TEXT DEFAULT ''");
+      db.exec("ALTER TABLE occupancy_roster ADD COLUMN is_tracked INTEGER DEFAULT 1");
     } catch (e) {
-      // Column might already exist from previous manual attempts
-      console.warn("Migration V2 Warning: 'notes' column might already exist.");
+      console.warn("Migration V3 Warning: 'is_tracked' column might already exist.");
     }
-    
-    try {
-      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique ON device_history(entity_id, last_changed)");
-    } catch (e) {
-      console.warn("Migration V2 Warning: 'idx_history_unique' might already exist.");
-    }
-    
-    currentVersion = 2;
+    currentVersion = 3;
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
   }
 
@@ -338,7 +335,7 @@ function initializeDatabase() {
   insertSetting.run("user_ai_context", "");
   insertSetting.run("dashboard_graph_zones", "[]");
   insertSetting.run("ai_realtime_interval", "5");
-  insertSetting.run("ai_lookback_days", "14");
+  insertSetting.run("ai_lookback_days", "60");
   insertSetting.run("ai_context_window_hours", "2");
   insertSetting.run("ai_model", "gemini-3-flash-preview");
   insertSetting.run("climate_abs_min", "55");
@@ -398,7 +395,7 @@ async function fillHistoryGaps(fullSync = false) {
     const trackedRows = db.prepare("SELECT entity_id FROM tracked_entities WHERE tracked = 1").all() as any[];
     const trackedIds = trackedRows.map(t => t.entity_id);
     
-    const lookbackDays = Number(getSetting("ai_lookback_days", "14"));
+    const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
     
     // Task: Robust Entity Search
     // Fetch all states to find all relevant entities for a "complete" picture
@@ -796,7 +793,7 @@ async function sendTelegramAlert(message: string) {
 async function runDailyAnalysis() {
   try {
     const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
-    const lookbackDays = Number(getSetting("ai_lookback_days", "14"));
+    const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
     const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
     
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
@@ -809,38 +806,95 @@ async function runDailyAnalysis() {
 
     // Fetch context
     const states = await fetchHA('/api/states') || [];
-    const trackedRows = db.prepare("SELECT entity_id, notes FROM tracked_entities WHERE tracked = 1").all() as any[] || [];
-    const trackedIds = trackedRows.map(t => t.entity_id);
+    
+    let trackedRows: any[] = [];
+    let occupancyRows: any[] = [];
+    let settingsRow: any = null;
+
+    if (pgPool && pgReady) {
+      const tRes = await pgPool.query("SELECT entity_id, notes FROM tracked_entities WHERE tracked = true");
+      trackedRows = tRes.rows;
+      const oRes = await pgPool.query("SELECT entity_id, name as notes FROM occupancy_roster WHERE is_tracked = 1");
+      occupancyRows = oRes.rows;
+      const sRes = await pgPool.query("SELECT value FROM settings WHERE key = 'user_ai_context'");
+      settingsRow = sRes.rows[0];
+    } else {
+      trackedRows = db.prepare("SELECT entity_id, notes FROM tracked_entities WHERE tracked = 1").all() as any[] || [];
+      occupancyRows = db.prepare("SELECT entity_id, name as notes FROM occupancy_roster WHERE is_tracked = 1").all() as any[] || [];
+      settingsRow = db.prepare("SELECT value FROM settings WHERE key = 'user_ai_context'").get() as any;
+    }
+    
+    // Combine and deduplicate
+    const allTracked = [...trackedRows];
+    occupancyRows.forEach(occ => {
+      if (!allTracked.find(t => t.entity_id === occ.entity_id)) {
+        allTracked.push(occ);
+      }
+    });
+
+    const trackedIds = allTracked.map(t => t.entity_id);
     
     let history: any[] = [];
     let logbook: any[] = [];
     if (trackedIds.length > 0) {
-      const placeholders = trackedIds.map(() => '?').join(',');
-      history = db.prepare(`
-        SELECT entity_id, state, attributes, last_changed 
-        FROM device_history 
-        WHERE last_changed >= datetime('now', '-${lookbackDays} days') 
-        AND entity_id IN (${placeholders})
-        ORDER BY last_changed ASC
-      `).all(...trackedIds) as any[] || [];
+      if (pgPool && pgReady) {
+        const hRes = await pgPool.query(`
+          SELECT entity_id, state, attributes, last_changed 
+          FROM device_history 
+          WHERE last_changed >= NOW() - INTERVAL '${lookbackDays} days'
+          AND entity_id = ANY($1)
+          ORDER BY last_changed ASC
+        `, [trackedIds]);
+        history = hRes.rows;
 
-      logbook = db.prepare(`
-        SELECT entity_id, message, when_ts, domain 
-        FROM logbook_history 
-        WHERE when_ts >= datetime('now', '-${lookbackDays} days') 
-        AND entity_id IN (${placeholders})
-        ORDER BY when_ts ASC
-      `).all(...trackedIds) as any[] || [];
+        const lRes = await pgPool.query(`
+          SELECT entity_id, message, when_ts, domain 
+          FROM logbook_history 
+          WHERE when_ts >= NOW() - INTERVAL '${lookbackDays} days'
+          AND entity_id = ANY($1)
+          ORDER BY when_ts ASC
+        `, [trackedIds]);
+        logbook = lRes.rows;
+      } else {
+        const placeholders = trackedIds.map(() => '?').join(',');
+        history = db.prepare(`
+          SELECT entity_id, state, attributes, last_changed 
+          FROM device_history 
+          WHERE last_changed >= datetime('now', '-${lookbackDays} days') 
+          AND entity_id IN (${placeholders})
+          ORDER BY last_changed ASC
+        `).all(...trackedIds) as any[] || [];
+
+        logbook = db.prepare(`
+          SELECT entity_id, message, when_ts, domain 
+          FROM logbook_history 
+          WHERE when_ts >= datetime('now', '-${lookbackDays} days') 
+          AND entity_id IN (${placeholders})
+          ORDER BY when_ts ASC
+        `).all(...trackedIds) as any[] || [];
+      }
     }
 
-    const settingsRows = db.prepare("SELECT * FROM settings WHERE key = 'user_ai_context'").get() as any;
-    const userContextRaw = settingsRows ? settingsRows.value : "";
+    const userContextRaw = settingsRow ? settingsRow.value : "";
     const userContext = parseUserContext(userContextRaw);
 
-    const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
-    const systemSnapshot = snapshotRow ? safeParse(snapshotRow.data) : {};
+    let snapshotRaw = null;
+    if (pgPool && pgReady) {
+      const snapRes = await pgPool.query("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1");
+      snapshotRaw = snapRes.rows[0]?.data;
+    } else {
+      const snapshotRow = db.prepare("SELECT data FROM ha_system_snapshots ORDER BY created_at DESC LIMIT 1").get() as any;
+      snapshotRaw = snapshotRow?.data;
+    }
+    const systemSnapshot = snapshotRaw ? safeParse(snapshotRaw) : {};
 
-    const automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
+    let automationsScripts: any[] = [];
+    if (pgPool && pgReady) {
+      const autoRes = await pgPool.query("SELECT entity_id, name, domain, content FROM ha_automations_scripts");
+      automationsScripts = autoRes.rows;
+    } else {
+      automationsScripts = db.prepare("SELECT entity_id, name, domain, content FROM ha_automations_scripts").all() as any[] || [];
+    }
 
     const now = new Date();
     const currentTimeStr = now.toLocaleString('en-US', { timeZoneName: 'short' });
@@ -855,8 +909,8 @@ async function runDailyAnalysis() {
       
       CRITICAL GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
-      2. Infer custody schedules (alternating weeks/days) based on presence patterns in the ${lookbackDays}-day history.
-      3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones.
+      2. Infer custody schedules (alternating weeks/days) and long-term seasonal or monthly patterns based on presence patterns in the ${lookbackDays}-day history.
+      3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones, accounting for weekly variations.
       4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
       5. Provide detailed reasoning for every schedule block.
       6. LEARN FROM USER AUTOMATIONS: I have provided a list of your existing Home Assistant automations and scripts. Use these to understand how you group actions (e.g., "Night Mode", "Away Mode", "Arriving Home") and what triggers you typically use (e.g., sunrise, sunset, presence). This helps you align your generated schedules with your existing preferences.
@@ -872,7 +926,7 @@ async function runDailyAnalysis() {
       
       SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
-      Tracked Devices: ${JSON.stringify(trackedRows)}
+      Tracked Devices (including People): ${JSON.stringify(allTracked)}
       Recent History (State Transitions Only): ${JSON.stringify(filteredHistory.slice(-1000))}
       Logbook Events (Last ${lookbackDays} Days): ${JSON.stringify(logbook.slice(-500))}
       
@@ -961,16 +1015,24 @@ async function runDailyAnalysis() {
     }
     
     if (result.insights && Array.isArray(result.insights)) {
-      const insertInsight = db.prepare("INSERT INTO insights (content, created_at) VALUES (?, datetime('now'))");
       for (const insight of result.insights) {
-        insertInsight.run(insight);
+        if (pgPool && pgReady) {
+          await pgPool.query("INSERT INTO insights (content, created_at) VALUES ($1, NOW())", [insight]);
+        }
+        db.prepare("INSERT INTO insights (content, created_at) VALUES (?, datetime('now'))").run(insight);
       }
     }
 
     if (result.reasoning && Array.isArray(result.reasoning)) {
-      const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now'))");
       for (const r of result.reasoning) {
-        insertReasoning.run(r.context || "General", r.decision || "Adjustment", r.reasoning || "");
+        if (pgPool && pgReady) {
+          await pgPool.query(
+            "INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES ($1, $2, $3, NOW())",
+            [r.context || "General", r.decision || "Adjustment", r.reasoning || ""]
+          );
+        }
+        db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now'))")
+          .run(r.context || "General", r.decision || "Adjustment", r.reasoning || "");
       }
     }
     
@@ -1338,21 +1400,37 @@ app.get("/api/occupancy", async (req, res) => {
 });
 
 app.post("/api/occupancy", async (req, res) => {
-  const { name, entity_id } = req.body;
+  const { name, entity_id, is_tracked } = req.body;
+  const trackedVal = is_tracked === false ? 0 : 1;
   try {
     if (pgPool && pgReady) {
       await pgPool.query(
-        "INSERT INTO occupancy_roster (name, entity_id) VALUES ($1, $2)",
-        [name, entity_id]
+        "INSERT INTO occupancy_roster (name, entity_id, is_tracked) VALUES ($1, $2, $3)",
+        [name, entity_id, trackedVal]
       );
     }
-    const stmt = db.prepare("INSERT INTO occupancy_roster (name, entity_id) VALUES (?, ?)");
-    stmt.run(name, entity_id);
+    const stmt = db.prepare("INSERT INTO occupancy_roster (name, entity_id, is_tracked) VALUES (?, ?, ?)");
+    stmt.run(name, entity_id, trackedVal);
     res.json({ success: true });
   } catch (e: any) {
     console.error("Failed to add to occupancy roster:\n", e.stack);
     sendTelegramAlert(`Failed to add to occupancy roster:\n\n${e.stack}`);
     res.status(400).json({ error: e.message });
+  }
+});
+
+app.patch("/api/occupancy/:id", async (req, res) => {
+  const { is_tracked } = req.body;
+  const trackedVal = is_tracked ? 1 : 0;
+  try {
+    if (pgPool && pgReady) {
+      await pgPool.query("UPDATE occupancy_roster SET is_tracked = $1 WHERE id = $2", [trackedVal, req.params.id]);
+    }
+    db.prepare("UPDATE occupancy_roster SET is_tracked = ? WHERE id = ?").run(trackedVal, req.params.id);
+    res.json({ success: true });
+  } catch (e: any) {
+    console.error("Failed to update occupancy roster:\n", e.stack);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1869,19 +1947,21 @@ app.get("/api/ai/analysis-context", async (req, res) => {
     const trackedRows = db.prepare("SELECT entity_id, notes FROM tracked_entities WHERE tracked = 1").all() as any[];
     const trackedIds = trackedRows.map(t => t.entity_id);
     
+    const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
+    
     let history: any[] = [];
     if (trackedIds.length > 0) {
       const placeholders = trackedIds.map(() => '?').join(',');
-      // Fetch 14 days of history for better pattern recognition (custody, work, etc)
+      // Fetch history for better pattern recognition (custody, work, etc)
       history = db.prepare(`
         SELECT entity_id, state, attributes, last_changed 
         FROM device_history 
-        WHERE last_changed >= datetime('now', '-14 days') 
+        WHERE last_changed >= datetime('now', '-${lookbackDays} days') 
         AND entity_id IN (${placeholders})
         ORDER BY last_changed ASC
       `).all(...trackedIds) as any[];
 
-      // If history is sparse (less than 50 entries for 14 days), try to force a gap fill from HA
+      // If history is sparse (less than 50 entries), try to force a gap fill from HA
       if (history.length < 50) {
         console.log("History sparse, triggering emergency gap fill for AI analysis...");
         await fillHistoryGaps();
@@ -1889,7 +1969,7 @@ app.get("/api/ai/analysis-context", async (req, res) => {
         history = db.prepare(`
           SELECT entity_id, state, attributes, last_changed 
           FROM device_history 
-          WHERE last_changed >= datetime('now', '-14 days') 
+          WHERE last_changed >= datetime('now', '-${lookbackDays} days') 
           AND entity_id IN (${placeholders})
           ORDER BY last_changed ASC
         `).all(...trackedIds) as any[];
@@ -2029,7 +2109,8 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
         id SERIAL PRIMARY KEY,
         name TEXT,
         entity_id TEXT,
-        status TEXT DEFAULT 'unknown'
+        status TEXT DEFAULT 'unknown',
+        is_tracked INTEGER DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS logbook_history (
         id SERIAL PRIMARY KEY,
