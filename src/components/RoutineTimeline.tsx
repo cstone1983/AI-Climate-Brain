@@ -59,8 +59,8 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
 
   // Helper to get icon based on time/action
   const getEventIcon = (time: string, action: string) => {
-    const hour = parseInt(time.split(':')[0]);
-    const lowerAction = action.toLowerCase();
+    const hour = time ? parseInt(time.split(':')[0]) : 12;
+    const lowerAction = (action || '').toLowerCase();
 
     if (lowerAction.includes('wakeup') || (hour >= 5 && hour < 8)) return <Sunrise className="w-5 h-5 text-orange-500" />;
     if (lowerAction.includes('coffee') || lowerAction.includes('breakfast')) return <Coffee className="w-5 h-5 text-amber-600" />;
@@ -77,8 +77,8 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
   const getFriendlyLabel = (event: ScheduleEvent) => {
     if (event.label) return event.label;
     
-    const hour = parseInt(event.time.split(':')[0]);
-    const action = event.action.toLowerCase();
+    const hour = event.time ? parseInt(event.time.split(':')[0]) : 12;
+    const action = (event.action || '').toLowerCase();
 
     if (action.includes('wakeup')) return "Morning Wakeup";
     if (action.includes('school')) return "School Departure";
