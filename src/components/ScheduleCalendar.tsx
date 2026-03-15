@@ -13,8 +13,16 @@ interface ScheduleCalendarProps {
   data: ScheduleEvent[];
 }
 
-export function ScheduleCalendar({ data }: ScheduleCalendarProps) {
+export function ScheduleCalendar({ data = [] }: ScheduleCalendarProps) {
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  if (!Array.isArray(data)) {
+    return (
+      <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100 text-sm">
+        Invalid schedule data format.
+      </div>
+    );
+  }
 
   // Group events by day if day/date exists
   const groupedData: Record<string, ScheduleEvent[]> = {};

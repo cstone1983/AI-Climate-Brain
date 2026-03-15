@@ -14,8 +14,16 @@ interface RoutineTimelineProps {
   data: ScheduleEvent[];
 }
 
-export function RoutineTimeline({ data }: RoutineTimelineProps) {
+export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  if (!Array.isArray(data)) {
+    return (
+      <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100 text-sm">
+        Invalid schedule data format.
+      </div>
+    );
+  }
 
   // Group events by day
   const groupedData: Record<string, ScheduleEvent[]> = {};

@@ -889,7 +889,13 @@ async function runDailyAnalysis() {
       }
     });
 
-    const result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
+    let result;
+    try {
+      result = JSON.parse((response.text || "{}").replace(/```json\n?|```/g, '').trim());
+    } catch (parseErr) {
+      console.error("Failed to parse AI response:", response.text);
+      throw new Error("AI returned invalid JSON format. Please try again.");
+    }
     
     // Save analysis
     if (result.schedule && result.schedule.name) {
@@ -1222,14 +1228,28 @@ app.post("/api/auth/logout", (req, res) => {
   });
 });
 
-app.get("/api/users", (req, res) => {
+app.get("/api/users", async (req, res) => {
+  if (pgPool && pgReady) {
+    try {
+      const result = await pgPool.query("SELECT id, username, role FROM users");
+      return res.json(result.rows);
+    } catch (e) {
+      console.error("PostgreSQL users fetch failed:", e);
+    }
+  }
   const users = db.prepare("SELECT id, username, role FROM users").all();
   res.json(users);
 });
 
-app.post("/api/users", (req, res) => {
+app.post("/api/users", async (req, res) => {
   const { username, password, role } = req.body;
   try {
+    if (pgPool && pgReady) {
+      await pgPool.query(
+        "INSERT INTO users (username, password, role) VALUES ($1, $2, $3)",
+        [username, password, role]
+      );
+    }
     const stmt = db.prepare("INSERT INTO users (username, password, role) VALUES (?, ?, ?)");
     stmt.run(username, password, role);
     res.json({ success: true });
@@ -1238,13 +1258,28 @@ app.post("/api/users", (req, res) => {
   }
 });
 
-app.delete("/api/users/:id", (req, res) => {
-  db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
-  res.json({ success: true });
+app.delete("/api/users/:id", async (req, res) => {
+  try {
+    if (pgPool && pgReady) {
+      await pgPool.query("DELETE FROM users WHERE id = $1", [req.params.id]);
+    }
+    db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Occupancy Roster Routes
-app.get("/api/occupancy", (req, res) => {
+app.get("/api/occupancy", async (req, res) => {
+  if (pgPool && pgReady) {
+    try {
+      const result = await pgPool.query("SELECT * FROM occupancy_roster");
+      return res.json(result.rows);
+    } catch (e) {
+      console.error("PostgreSQL occupancy fetch failed:", e);
+    }
+  }
   try {
     const roster = db.prepare("SELECT * FROM occupancy_roster").all();
     res.json(roster);
@@ -1255,9 +1290,15 @@ app.get("/api/occupancy", (req, res) => {
   }
 });
 
-app.post("/api/occupancy", (req, res) => {
+app.post("/api/occupancy", async (req, res) => {
   const { name, entity_id } = req.body;
   try {
+    if (pgPool && pgReady) {
+      await pgPool.query(
+        "INSERT INTO occupancy_roster (name, entity_id) VALUES ($1, $2)",
+        [name, entity_id]
+      );
+    }
     const stmt = db.prepare("INSERT INTO occupancy_roster (name, entity_id) VALUES (?, ?)");
     stmt.run(name, entity_id);
     res.json({ success: true });
@@ -1268,8 +1309,11 @@ app.post("/api/occupancy", (req, res) => {
   }
 });
 
-app.delete("/api/occupancy/:id", (req, res) => {
+app.delete("/api/occupancy/:id", async (req, res) => {
   try {
+    if (pgPool && pgReady) {
+      await pgPool.query("DELETE FROM occupancy_roster WHERE id = $1", [req.params.id]);
+    }
     db.prepare("DELETE FROM occupancy_roster WHERE id = ?").run(req.params.id);
     res.json({ success: true });
   } catch (e: any) {
@@ -1298,19 +1342,44 @@ app.post("/api/ha/sync-history", async (req, res) => {
   }
 });
 
-app.get("/api/settings", (req, res) => {
-  const settings = db.prepare("SELECT * FROM settings").all();
-  const settingsObj = settings.reduce((acc: any, row: any) => {
+app.get("/api/settings", async (req, res) => {
+  let settingsRows: any[] = [];
+  if (pgPool && pgReady) {
+    try {
+      const result = await pgPool.query("SELECT * FROM settings");
+      settingsRows = result.rows;
+    } catch (e) {
+      console.error("PostgreSQL settings fetch failed:", e);
+      settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
+    }
+  } else {
+    settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
+  }
+
+  const settingsObj = settingsRows.reduce((acc: any, row: any) => {
     acc[row.key] = row.value;
     return acc;
   }, {});
   res.json(settingsObj);
 });
 
-app.post("/api/settings", (req, res) => {
+app.post("/api/settings", async (req, res) => {
   const updates = req.body;
-  const updateSetting = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?");
   
+  if (pgPool && pgReady) {
+    try {
+      for (const [key, value] of Object.entries(updates)) {
+        await pgPool.query(
+          "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2",
+          [key, String(value)]
+        );
+      }
+    } catch (e) {
+      console.error("PostgreSQL settings update failed:", e);
+    }
+  }
+
+  const updateSetting = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?");
   for (const [key, value] of Object.entries(updates)) {
     updateSetting.run(key, String(value), String(value));
   }
@@ -1867,26 +1936,83 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
         entity_id TEXT,
         state TEXT,
         attributes TEXT,
-        last_changed TIMESTAMP
+        last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS schedules (
         id SERIAL PRIMARY KEY,
         name TEXT,
         description TEXT,
         schedule_data TEXT,
-        created_at TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS tracked_entities (
+        entity_id TEXT PRIMARY KEY,
+        tracked BOOLEAN DEFAULT TRUE,
+        notes TEXT DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS insights (
+        id SERIAL PRIMARY KEY,
+        content TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS ai_reasoning (
+        id SERIAL PRIMARY KEY,
+        context TEXT,
+        decision TEXT,
+        reasoning TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         username TEXT UNIQUE,
         password TEXT,
-        role TEXT
+        role TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS ha_system_snapshots (
+        id SERIAL PRIMARY KEY,
+        data TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS occupancy_roster (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        entity_id TEXT,
+        status TEXT DEFAULT 'unknown'
+      );
+      CREATE TABLE IF NOT EXISTS logbook_history (
+        id SERIAL PRIMARY KEY,
+        entity_id TEXT,
+        message TEXT,
+        when_ts TIMESTAMP,
+        context_user_id TEXT,
+        domain TEXT,
+        attributes TEXT
+      );
+      CREATE TABLE IF NOT EXISTS ha_rules (
+        entity_id TEXT PRIMARY KEY,
+        name TEXT,
+        domain TEXT,
+        state TEXT,
+        attributes TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS ha_automations_scripts (
+        entity_id TEXT PRIMARY KEY,
+        name TEXT,
+        domain TEXT,
+        content TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
       CREATE INDEX IF NOT EXISTS idx_pg_history_entity_time ON device_history(entity_id, last_changed);
+      CREATE INDEX IF NOT EXISTS idx_pg_history_time ON device_history(last_changed);
+      CREATE INDEX IF NOT EXISTS idx_pg_logbook_time ON logbook_history(when_ts);
+      CREATE INDEX IF NOT EXISTS idx_pg_logbook_entity ON logbook_history(entity_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_history_unique ON device_history(entity_id, last_changed);
     `);
 
     // 2. Migrate Settings
@@ -1909,17 +2035,76 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
       );
     }
 
-    // 4. Migrate History
+    // 4. Migrate Tracked Entities
+    const tracked = db.prepare("SELECT * FROM tracked_entities").all() as any[];
+    broadcastProgress(`Migrating ${tracked.length} tracked entities...`);
+    for (const t of tracked) {
+      await pgPool.query(
+        "INSERT INTO tracked_entities (entity_id, tracked, notes) VALUES ($1, $2, $3) ON CONFLICT(entity_id) DO UPDATE SET tracked = $2, notes = $3",
+        [t.entity_id, t.tracked === 1, t.notes]
+      );
+    }
+
+    // 5. Migrate Insights
+    const insights = db.prepare("SELECT * FROM insights").all() as any[];
+    broadcastProgress(`Migrating ${insights.length} insights...`);
+    for (const i of insights) {
+      await pgPool.query(
+        "INSERT INTO insights (content, created_at) VALUES ($1, $2)",
+        [i.content, i.created_at]
+      );
+    }
+
+    // 6. Migrate AI Reasoning
+    const reasoning = db.prepare("SELECT * FROM ai_reasoning").all() as any[];
+    broadcastProgress(`Migrating ${reasoning.length} reasoning records...`);
+    for (const r of reasoning) {
+      await pgPool.query(
+        "INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES ($1, $2, $3, $4)",
+        [r.context, r.decision, r.reasoning, r.created_at]
+      );
+    }
+
+    // 7. Migrate Occupancy Roster
+    const roster = db.prepare("SELECT * FROM occupancy_roster").all() as any[];
+    broadcastProgress(`Migrating ${roster.length} roster entries...`);
+    for (const r of roster) {
+      await pgPool.query(
+        "INSERT INTO occupancy_roster (name, entity_id, status) VALUES ($1, $2, $3)",
+        [r.name, r.entity_id, r.status]
+      );
+    }
+
+    // 8. Migrate HA Rules
+    const rules = db.prepare("SELECT * FROM ha_rules").all() as any[];
+    broadcastProgress(`Migrating ${rules.length} HA rules...`);
+    for (const r of rules) {
+      await pgPool.query(
+        "INSERT INTO ha_rules (entity_id, name, domain, state, attributes, last_updated) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(entity_id) DO NOTHING",
+        [r.entity_id, r.name, r.domain, r.state, r.attributes, r.last_updated]
+      );
+    }
+
+    // 9. Migrate HA Automations/Scripts
+    const autos = db.prepare("SELECT * FROM ha_automations_scripts").all() as any[];
+    broadcastProgress(`Migrating ${autos.length} automations/scripts...`);
+    for (const a of autos) {
+      await pgPool.query(
+        "INSERT INTO ha_automations_scripts (entity_id, name, domain, content, last_updated) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(entity_id) DO NOTHING",
+        [a.entity_id, a.name, a.domain, a.content, a.last_updated]
+      );
+    }
+
+    // 10. Migrate History (Large table, use transaction)
     const history = db.prepare("SELECT * FROM device_history").all() as any[];
     broadcastProgress(`Migrating ${history.length} history records...`);
     
-    // Use a transaction for history to be faster
     const client = await pgPool.connect();
     try {
       await client.query('BEGIN');
       for (const record of history) {
         await client.query(
-          "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4)",
+          "INSERT INTO device_history (entity_id, state, attributes, last_changed) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
           [record.entity_id, record.state, record.attributes, record.last_changed]
         );
       }
@@ -1931,7 +2116,17 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
       client.release();
     }
 
-    // 5. Migrate Schedules
+    // 11. Migrate Logbook
+    const logbook = db.prepare("SELECT * FROM logbook_history").all() as any[];
+    broadcastProgress(`Migrating ${logbook.length} logbook entries...`);
+    for (const l of logbook) {
+      await pgPool.query(
+        "INSERT INTO logbook_history (entity_id, message, when_ts, context_user_id, domain, attributes) VALUES ($1, $2, $3, $4, $5, $6)",
+        [l.entity_id, l.message, l.when_ts, l.context_user_id, l.domain, l.attributes]
+      );
+    }
+
+    // 12. Migrate Schedules
     const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
     broadcastProgress(`Migrating ${schedules.length} schedules...`);
     for (const s of schedules) {
@@ -1941,12 +2136,12 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
       );
     }
 
-    // 6. Mark migration as complete in settings
+    // 13. Mark migration as complete in settings
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?").run("database_type", "postgresql", "postgresql");
     await pgPool.query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2", ["database_type", "postgresql"]);
 
     broadcastProgress("Migration to local PostgreSQL complete.");
-    res.json({ success: true, message: "Migration to local PostgreSQL complete. All users and settings have been moved." });
+    res.json({ success: true, message: "Migration to local PostgreSQL complete. All data has been moved and the app is now using PostgreSQL." });
   } catch (e: any) {
     console.error("PostgreSQL Migration failed:", e);
     broadcastToFrontend({ type: 'MIGRATION_PROGRESS', message: `ERROR: ${e.message}` });
@@ -1967,12 +2162,28 @@ app.get("/api/schedules", async (req, res) => {
   res.json(schedules);
 });
 
-app.get("/api/insights", (req, res) => {
+app.get("/api/insights", async (req, res) => {
+  if (pgPool && pgReady) {
+    try {
+      const result = await pgPool.query("SELECT * FROM insights ORDER BY created_at DESC LIMIT 20");
+      return res.json(result.rows);
+    } catch (e) {
+      console.error("PostgreSQL insights fetch failed:", e);
+    }
+  }
   const insights = db.prepare("SELECT * FROM insights ORDER BY created_at DESC LIMIT 20").all();
   res.json(insights);
 });
 
-app.get("/api/reasoning", (req, res) => {
+app.get("/api/reasoning", async (req, res) => {
+  if (pgPool && pgReady) {
+    try {
+      const result = await pgPool.query("SELECT * FROM ai_reasoning ORDER BY created_at DESC LIMIT 50");
+      return res.json(result.rows);
+    } catch (e) {
+      console.error("PostgreSQL reasoning fetch failed:", e);
+    }
+  }
   const reasoning = db.prepare("SELECT * FROM ai_reasoning ORDER BY created_at DESC LIMIT 50").all();
   res.json(reasoning);
 });
@@ -2053,6 +2264,19 @@ app.post("/api/ha/bulk-track", async (req, res) => {
   }
 
   try {
+    if (pgPool && pgReady) {
+      try {
+        for (const entity of entities) {
+          await pgPool.query(
+            "INSERT INTO tracked_entities (entity_id, tracked, notes) VALUES ($1, TRUE, $2) ON CONFLICT(entity_id) DO UPDATE SET tracked = TRUE, notes = $2",
+            [entity.entity_id, entity.notes || '']
+          );
+        }
+      } catch (e) {
+        console.error("PostgreSQL bulk track failed:", e);
+      }
+    }
+
     const stmt = db.prepare("INSERT INTO tracked_entities (entity_id, tracked, notes) VALUES (?, 1, ?) ON CONFLICT(entity_id) DO UPDATE SET tracked = 1, notes = ?");
     
     db.transaction(() => {
@@ -2092,9 +2316,21 @@ app.get("/api/ha/entities", async (req, res) => {
       domain: s.entity_id.split('.')[0]
     }));
     
-    const trackedRows = db.prepare("SELECT * FROM tracked_entities").all() as any[];
+    let trackedRows: any[] = [];
+    if (pgPool && pgReady) {
+      try {
+        const result = await pgPool.query("SELECT * FROM tracked_entities");
+        trackedRows = result.rows;
+      } catch (e) {
+        console.error("PostgreSQL tracked_entities fetch failed:", e);
+        trackedRows = db.prepare("SELECT * FROM tracked_entities").all() as any[];
+      }
+    } else {
+      trackedRows = db.prepare("SELECT * FROM tracked_entities").all() as any[];
+    }
+    
     const trackedMap = trackedRows.reduce((acc: any, row: any) => {
-      acc[row.entity_id] = { tracked: row.tracked === 1, notes: row.notes || '' };
+      acc[row.entity_id] = { tracked: row.tracked === 1 || row.tracked === true, notes: row.notes || '' };
       return acc;
     }, {});
 
@@ -2104,8 +2340,20 @@ app.get("/api/ha/entities", async (req, res) => {
   }
 });
 
-app.post("/api/ha/tracked", (req, res) => {
+app.post("/api/ha/tracked", async (req, res) => {
   const { entity_id, tracked, notes } = req.body;
+  
+  if (pgPool && pgReady) {
+    try {
+      await pgPool.query(
+        "INSERT INTO tracked_entities (entity_id, tracked, notes) VALUES ($1, $2, $3) ON CONFLICT(entity_id) DO UPDATE SET tracked = $2, notes = $3",
+        [entity_id, !!tracked, notes || '']
+      );
+    } catch (e) {
+      console.error("PostgreSQL tracked_entities update failed:", e);
+    }
+  }
+
   const stmt = db.prepare("INSERT INTO tracked_entities (entity_id, tracked, notes) VALUES (?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET tracked = ?, notes = ?");
   stmt.run(entity_id, tracked ? 1 : 0, notes || '', tracked ? 1 : 0, notes || '');
   res.json({ success: true });
@@ -2131,8 +2379,23 @@ async function startServer() {
     app.use(express.static(path.join(__dirname, "dist")));
   }
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Sync settings from PostgreSQL if it's the primary DB
+    if (pgPool && pgReady) {
+      try {
+        const result = await pgPool.query("SELECT * FROM settings");
+        const updateSetting = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?");
+        for (const row of result.rows) {
+          updateSetting.run(row.key, row.value, row.value);
+        }
+        console.log(`Synced ${result.rows.length} settings from PostgreSQL to SQLite.`);
+      } catch (e) {
+        console.error("Failed to sync settings from PostgreSQL on startup:", e);
+      }
+    }
+
     connectToHA();
   });
 

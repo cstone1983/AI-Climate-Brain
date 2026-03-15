@@ -53,6 +53,27 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   
+  const safeJsonParse = (str: string, fallback: any = []) => {
+    try {
+      const parsed = JSON.parse(str);
+      return Array.isArray(parsed) ? parsed : fallback;
+    } catch (e) {
+      console.error("JSON parse error", e);
+      return fallback;
+    }
+  };
+
+  const formatDate = (dateStr: string) => {
+    if (!dateStr) return 'Unknown Date';
+    try {
+      const date = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      return date.toLocaleString();
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  };
+  
   const [settings, setSettings] = useState({
     ha_url: '',
     ha_token: '',
@@ -68,7 +89,9 @@ export default function App() {
     climate_abs_max: '80',
     dashboard_default_timeframe: '24h',
     ghost_mode_hvac: 'true',
-    ghost_mode_whole_home: 'true'
+    ghost_mode_whole_home: 'true',
+    database_type: 'sqlite',
+    gemini_api_key: ''
   });
 
   const [climateSettings, setClimateSettings] = useState({
@@ -161,8 +184,9 @@ export default function App() {
       const ws = new WebSocket(wsUrl);
       
       ws.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        if (message.type === 'NEW_HISTORY') {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'NEW_HISTORY') {
           const filters = historyFiltersRef.current;
           const isRunningView = !filters.entity_id && !filters.state && !filters.start_date && !filters.end_date && filters.offset === 0;
           
@@ -192,7 +216,10 @@ export default function App() {
         } else if (message.type === 'MIGRATION_PROGRESS') {
           setMigrationProgress(prev => [...prev, message.message]);
         }
-      };
+      } catch (e) {
+        console.error("Failed to parse WebSocket message", e);
+      }
+    };
       
       return () => ws.close();
     }
@@ -391,21 +418,36 @@ export default function App() {
   };
 
   const fetchSchedules = async () => {
-    const res = await fetch('/api/schedules');
-    const data = await res.json();
-    setSchedules(data);
+    try {
+      const res = await fetch('/api/schedules');
+      const data = await res.json();
+      setSchedules(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error("Failed to fetch schedules", e);
+      setSchedules([]);
+    }
   };
 
   const fetchInsights = async () => {
-    const res = await fetch('/api/insights');
-    const data = await res.json();
-    setInsights(data);
+    try {
+      const res = await fetch('/api/insights');
+      const data = await res.json();
+      setInsights(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error("Failed to fetch insights", e);
+      setInsights([]);
+    }
   };
 
   const fetchReasoning = async () => {
-    const res = await fetch('/api/reasoning');
-    const data = await res.json();
-    setReasoning(data);
+    try {
+      const res = await fetch('/api/reasoning');
+      const data = await res.json();
+      setReasoning(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error("Failed to fetch reasoning", e);
+      setReasoning([]);
+    }
   };
 
   const fetchEntities = async () => {
@@ -601,6 +643,8 @@ export default function App() {
       
       if (res.ok) {
         setMigrationStatus({ success: true, message: 'Migration successful! Your data is now stored in your local PostgreSQL database.' });
+        // Refresh settings to hide the migration tool
+        fetchSettings();
       } else {
         setMigrationStatus({ success: false, message: `Migration failed: ${data.error || 'Unknown error'}` });
       }
@@ -691,7 +735,7 @@ export default function App() {
   };
 
   const handleToggleGraphZone = (entity_id: string) => {
-    const currentZones = JSON.parse(settings.dashboard_graph_zones || '[]');
+    const currentZones = safeJsonParse(settings.dashboard_graph_zones || '[]');
     let newZones;
     if (currentZones.includes(entity_id)) {
       newZones = currentZones.filter((id: string) => id !== entity_id);
@@ -798,7 +842,7 @@ export default function App() {
   }
 
   // Process history for the chart
-  const graphZones = JSON.parse(settings.dashboard_graph_zones || '[]');
+  const graphZones = safeJsonParse(settings.dashboard_graph_zones || '[]');
   const chartDataMap: Record<string, any> = {};
   
     graphData.forEach(item => {
@@ -1016,10 +1060,10 @@ export default function App() {
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
-                      {insights.length > 0 ? insights.map((insight: any) => (
-                        <div key={insight.id} className="flex items-start space-x-3 p-3 bg-slate-50 rounded-lg border border-slate-100">
+                      {Array.isArray(insights) && insights.length > 0 ? insights.map((insight: any, idx: number) => (
+                        <div key={insight.id || idx} className="flex items-start space-x-3 p-3 bg-slate-50 rounded-lg border border-slate-100">
                           <Zap className="w-5 h-5 text-indigo-500 mt-0.5 flex-shrink-0" />
-                          <p className="text-sm text-slate-700">{insight.content}</p>
+                          <p className="text-sm text-slate-700">{insight.content || insight}</p>
                         </div>
                       )) : (
                         <div className="text-sm text-slate-500 text-center py-4">No insights generated yet. Run the daily analysis.</div>
@@ -1465,7 +1509,7 @@ export default function App() {
                       <div className="flex justify-between items-start">
                         <div>
                           <CardTitle>{schedule.name}</CardTitle>
-                          <CardDescription>{new Date(schedule.created_at + 'Z').toLocaleString()}</CardDescription>
+                          <CardDescription>{formatDate(schedule.created_at)}</CardDescription>
                         </div>
                       </div>
                     </CardHeader>
@@ -1473,15 +1517,15 @@ export default function App() {
                       <p className="text-sm text-slate-600 mb-6">{schedule.description}</p>
                       
                       {scheduleViewMode === 'timeline' ? (
-                        <RoutineTimeline data={JSON.parse(schedule.schedule_data)} />
+                        <RoutineTimeline data={safeJsonParse(schedule.schedule_data)} />
                       ) : scheduleViewMode === 'calendar' ? (
                         <div className="h-[600px]">
-                          <ScheduleCalendar data={JSON.parse(schedule.schedule_data)} />
+                          <ScheduleCalendar data={safeJsonParse(schedule.schedule_data)} />
                         </div>
                       ) : (
                         <div className="bg-slate-900 rounded-xl p-6 overflow-auto max-h-[600px] border border-white/10">
                           <pre className="text-xs text-emerald-400 font-mono leading-relaxed">
-                            {JSON.stringify(JSON.parse(schedule.schedule_data), null, 2)}
+                            {JSON.stringify(safeJsonParse(schedule.schedule_data), null, 2)}
                           </pre>
                         </div>
                       )}
@@ -1507,15 +1551,15 @@ export default function App() {
               </div>
 
               <div className="space-y-4">
-                {reasoning.map((r: any) => (
-                  <Card key={r.id}>
+                {Array.isArray(reasoning) && reasoning.map((r: any, idx: number) => (
+                  <Card key={r.id || idx}>
                     <CardHeader className="pb-2">
                       <div className="flex justify-between items-start">
                         <div>
                           <CardDescription className="text-indigo-600 font-medium mb-1">{r.context}</CardDescription>
                           <CardTitle className="text-lg">{r.decision}</CardTitle>
                         </div>
-                        <span className="text-xs text-slate-400">{new Date(r.created_at + 'Z').toLocaleString()}</span>
+                        <span className="text-xs text-slate-400">{formatDate(r.created_at)}</span>
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -1691,49 +1735,51 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="pt-4 border-t border-slate-100">
-                        <div className="flex items-center gap-2 mb-4">
-                          <Zap className="w-5 h-5 text-amber-500" />
-                          <h3 className="font-medium">Database Upgrade</h3>
-                        </div>
-                        <p className="text-sm text-slate-500 mb-4">
-                          Migrate your local SQLite database to a **Local PostgreSQL** service. This provides faster access 
-                          and better scalability for large history sets while keeping all data on your local machine.
-                        </p>
-                        
-                        {migrationStatus.message && (
-                          <div className={`p-3 mb-4 rounded-md text-sm flex items-start gap-3 ${migrationStatus.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
-                            {migrationStatus.success ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />}
-                            <div className="flex-1">
-                              <p className="text-xs">{migrationStatus.message}</p>
-                              
-                              {migrationProgress.length > 0 && (
-                                <div className="mt-3 p-2 bg-black/5 rounded font-mono text-[10px] max-h-32 overflow-y-auto space-y-1">
-                                  {migrationProgress.map((p, i) => (
-                                    <div key={i} className={p.startsWith('ERROR') ? 'text-red-600' : ''}>{p}</div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
+                      {settings.database_type !== 'postgresql' && (
+                        <div className="pt-4 border-t border-slate-100">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Zap className="w-5 h-5 text-amber-500" />
+                            <h3 className="font-medium">Database Upgrade</h3>
                           </div>
-                        )}
-
-                        <Button 
-                          onClick={handleMigrateDatabase}
-                          disabled={isMigrating}
-                          className="w-full bg-amber-600 hover:bg-amber-700 text-white"
-                        >
-                          {isMigrating ? (
-                            <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                          ) : (
-                            <ArrowUpCircle className="w-4 h-4 mr-2" />
+                          <p className="text-sm text-slate-500 mb-4">
+                            Migrate your local SQLite database to a **Local PostgreSQL** service. This provides faster access 
+                            and better scalability for large history sets while keeping all data on your local machine.
+                          </p>
+                          
+                          {migrationStatus.message && (
+                            <div className={`p-3 mb-4 rounded-md text-sm flex items-start gap-3 ${migrationStatus.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
+                              {migrationStatus.success ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                              <div className="flex-1">
+                                <p className="text-xs">{migrationStatus.message}</p>
+                                
+                                {migrationProgress.length > 0 && (
+                                  <div className="mt-3 p-2 bg-black/5 rounded font-mono text-[10px] max-h-32 overflow-y-auto space-y-1">
+                                    {migrationProgress.map((p, i) => (
+                                      <div key={i} className={p.startsWith('ERROR') ? 'text-red-600' : ''}>{p}</div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           )}
-                          Migrate to Local PostgreSQL
-                        </Button>
-                        <p className="text-[10px] text-slate-400 mt-2 text-center italic">
-                          * This is a one-time process. Ensure you have backed up your data if necessary.
-                        </p>
-                      </div>
+
+                          <Button 
+                            onClick={handleMigrateDatabase}
+                            disabled={isMigrating}
+                            className="w-full bg-amber-600 hover:bg-amber-700 text-white"
+                          >
+                            {isMigrating ? (
+                              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                            ) : (
+                              <ArrowUpCircle className="w-4 h-4 mr-2" />
+                            )}
+                            Migrate to Local PostgreSQL
+                          </Button>
+                          <p className="text-[10px] text-slate-400 mt-2 text-center italic">
+                            * This is a one-time process. Ensure you have backed up your data if necessary.
+                          </p>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
 
@@ -1789,7 +1835,7 @@ export default function App() {
                             <input 
                               type="checkbox" 
                               className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
-                              checked={JSON.parse(settings.dashboard_graph_zones || '[]').includes(zone.entity_id)}
+                              checked={safeJsonParse(settings.dashboard_graph_zones || '[]').includes(zone.entity_id)}
                               onChange={() => handleToggleGraphZone(zone.entity_id)}
                             />
                             <span className="text-sm font-medium text-slate-700">{zone.friendly_name}</span>
