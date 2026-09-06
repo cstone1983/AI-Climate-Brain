@@ -35,7 +35,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  History as HistoryIcon
+  History as HistoryIcon,
+  Power
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -442,6 +443,25 @@ export default function App() {
   const handleUpdateNotes = async (entity_id: string, notes: string) => {
     const current = trackedEntities[entity_id] || { tracked: false };
     handleToggleTracked(entity_id, current.tracked, notes);
+  };
+
+  const [togglingEntity, setTogglingEntity] = useState<string | null>(null);
+  const handleToggleDevice = async (entity: any) => {
+    setTogglingEntity(entity.entity_id);
+    try {
+      const service = entity.state === 'on' ? 'turn_off' : 'turn_on';
+      await fetch('/api/ha/call-service', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: entity.domain, service, serviceData: { entity_id: entity.entity_id } })
+      });
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await fetchEntities();
+    } catch (e) {
+      console.error("Failed to toggle device", e);
+    } finally {
+      setTogglingEntity(null);
+    }
   };
 
   useEffect(() => {
@@ -2487,15 +2507,34 @@ export default function App() {
                             <p className="font-medium text-sm">{entity.friendly_name}</p>
                             <p className="text-xs text-slate-500">{entity.entity_id}</p>
                           </div>
+                          <div className="flex items-center gap-3">
+                            {(entity.domain === 'light' || entity.domain === 'switch') && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={entity.state === 'on' ? 'default' : 'outline'}
+                                disabled={togglingEntity === entity.entity_id}
+                                onClick={() => handleToggleDevice(entity)}
+                                title={entity.state === 'on' ? 'Turn off' : 'Turn on'}
+                                className={entity.state === 'on' ? 'bg-emerald-600 hover:bg-emerald-700 text-white h-8 px-2' : 'h-8 px-2'}
+                              >
+                                {togglingEntity === entity.entity_id ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Power className="w-3.5 h-3.5" />
+                                )}
+                              </Button>
+                            )}
                           <label className="relative inline-flex items-center cursor-pointer">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               className="sr-only peer"
                               checked={trackedEntities[entity.entity_id]?.tracked || false}
                               onChange={(e) => handleToggleTracked(entity.entity_id, e.target.checked, trackedEntities[entity.entity_id]?.notes || '')}
                             />
                             <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
                           </label>
+                          </div>
                         </div>
                         {trackedEntities[entity.entity_id]?.tracked && (
                           <Input 
