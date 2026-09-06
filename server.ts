@@ -476,6 +476,7 @@ function initializeDatabase() {
   insertSetting.run("ai_realtime_interval", "5");
   insertSetting.run("ai_lookback_days", "60");
   insertSetting.run("ai_context_window_hours", "2");
+  insertSetting.run("ai_daily_analysis_hour", "3");
   insertSetting.run("ai_model", "claude-sonnet-5");
   insertSetting.run("climate_abs_min", "55");
   insertSetting.run("climate_abs_max", "80");
@@ -1188,8 +1189,33 @@ async function runDailyAnalysis() {
   }
 }
 
-// Run daily analysis every 24 hours
-setInterval(runDailyAnalysis, 24 * 60 * 60 * 1000);
+// Run daily analysis at a fixed local time each day (default 3 AM), rather
+// than 24h after whatever moment the process happened to last start - so
+// restarts/deploys don't cause the run time to drift.
+let dailyAnalysisTimeoutId: NodeJS.Timeout | null = null;
+
+function scheduleDailyAnalysis() {
+  if (dailyAnalysisTimeoutId) clearTimeout(dailyAnalysisTimeoutId);
+
+  const hour = Math.min(23, Math.max(0, Number(getSetting("ai_daily_analysis_hour", "3"))));
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+
+  const delayMs = next.getTime() - now.getTime();
+  console.log(`Next daily analysis scheduled for ${next.toLocaleString()} (in ${Math.round(delayMs / 60000)} minutes).`);
+
+  dailyAnalysisTimeoutId = setTimeout(async () => {
+    try {
+      await runDailyAnalysis();
+    } catch (e) {
+      console.error("Scheduled daily analysis failed:", e);
+    }
+    scheduleDailyAnalysis(); // reschedule for the following day, picking up any setting change
+  }, delayMs);
+}
+
+scheduleDailyAnalysis();
 
 // --- Real-time AI Control Loop ---
 async function executeRealTimeAIControl() {
@@ -1680,7 +1706,12 @@ app.post("/api/settings", async (req, res) => {
   if (updates.ai_realtime_interval !== undefined) {
     startRealTimeAIControl();
   }
-  
+
+  // Reschedule the daily analysis if its target hour changed
+  if (updates.ai_daily_analysis_hour !== undefined) {
+    scheduleDailyAnalysis();
+  }
+
   res.json({ success: true });
 });
 

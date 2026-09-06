@@ -85,6 +85,7 @@ export default function App() {
     ai_realtime_interval: '5',
     ai_lookback_days: '60',
     ai_context_window_hours: '2',
+    ai_daily_analysis_hour: '3',
     ai_model: 'claude-sonnet-5',
     climate_abs_min: '55',
     climate_abs_max: '80',
@@ -1719,6 +1720,20 @@ export default function App() {
                               value={settings.ai_context_window_hours}
                               onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
                             />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_daily_analysis_hour">Daily Schedule Generation Hour (0-23)</Label>
+                            <div className="flex items-center gap-4">
+                              <Input
+                                id="ai_daily_analysis_hour"
+                                type="number"
+                                min="0"
+                                max="23"
+                                value={settings.ai_daily_analysis_hour}
+                                onChange={e => setSettings({...settings, ai_daily_analysis_hour: e.target.value})}
+                              />
+                              <span className="text-xs text-slate-500 whitespace-nowrap">Server local time, 24h format</span>
+                            </div>
                           </div>
                         </div>
                         <div className="pt-2">
