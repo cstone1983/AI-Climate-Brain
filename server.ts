@@ -276,7 +276,7 @@ app.use(session({
   }
 }));
 
-const CURRENT_DB_VERSION = 4; // Increment this when adding new migrations
+const CURRENT_DB_VERSION = 5; // Increment this when adding new migrations
 
 function parseUserContext(rawValue: string): string {
   if (!rawValue) return "";
@@ -445,6 +445,20 @@ function initializeDatabase() {
       console.warn("Migration V4 Warning: failed to hash existing passwords.", e);
     }
     currentVersion = 4;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
+  }
+
+  if (currentVersion < 5) {
+    console.log("Applying Migration: Version 5 (Replacing stale Gemini ai_model value)");
+    try {
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'ai_model'").get() as any;
+      if (row && row.value && row.value.startsWith("gemini-")) {
+        db.prepare("UPDATE settings SET value = ? WHERE key = 'ai_model'").run("claude-sonnet-5");
+      }
+    } catch (e) {
+      console.warn("Migration V5 Warning: failed to replace stale ai_model value.", e);
+    }
+    currentVersion = 5;
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
   }
 

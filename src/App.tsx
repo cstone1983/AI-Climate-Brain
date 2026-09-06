@@ -1665,61 +1665,66 @@ export default function App() {
                       <CardTitle>AI Engine Tuning</CardTitle>
                       <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="ai_model">Claude Model Selection</Label>
-                          <select
-                            id="ai_model"
-                            className="w-full p-2 border border-slate-200 rounded-md text-sm"
-                            value={settings.ai_model}
-                            onChange={e => setSettings({...settings, ai_model: e.target.value})}
-                          >
-                            <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
-                            <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
-                            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>
-                          <div className="flex items-center gap-4">
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_model">Claude Model Selection</Label>
+                            <select
+                              id="ai_model"
+                              className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                              value={settings.ai_model}
+                              onChange={e => setSettings({...settings, ai_model: e.target.value})}
+                            >
+                              <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
+                              <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
+                              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
+                            </select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>
+                            <div className="flex items-center gap-4">
+                              <Input
+                                id="ai_realtime_interval"
+                                type="number"
+                                min="1"
+                                max="60"
+                                value={settings.ai_realtime_interval}
+                                onChange={e => setSettings({...settings, ai_realtime_interval: e.target.value})}
+                              />
+                              <span className="text-xs text-slate-500 whitespace-nowrap">Every {settings.ai_realtime_interval} mins</span>
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_lookback_days">Lookback Window (Days: 7-90)</Label>
+                            <div className="flex items-center gap-4">
+                              <Input
+                                id="ai_lookback_days"
+                                type="number"
+                                min="7"
+                                max="90"
+                                value={settings.ai_lookback_days}
+                                onChange={e => setSettings({...settings, ai_lookback_days: e.target.value})}
+                              />
+                              <span className="text-xs text-slate-500 whitespace-nowrap">{settings.ai_lookback_days} days of history</span>
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_context_window_hours">Real-Time Context Window (Hours: 1-24)</Label>
                             <Input
-                              id="ai_realtime_interval"
+                              id="ai_context_window_hours"
                               type="number"
                               min="1"
-                              max="60"
-                              value={settings.ai_realtime_interval}
-                              onChange={e => setSettings({...settings, ai_realtime_interval: e.target.value})}
+                              max="24"
+                              value={settings.ai_context_window_hours}
+                              onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
                             />
-                            <span className="text-xs text-slate-500 whitespace-nowrap">Every {settings.ai_realtime_interval} mins</span>
                           </div>
                         </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="ai_lookback_days">Lookback Window (Days: 7-30)</Label>
-                          <div className="flex items-center gap-4">
-                            <Input
-                              id="ai_lookback_days"
-                              type="number"
-                              min="7"
-                              max="30"
-                              value={settings.ai_lookback_days}
-                              onChange={e => setSettings({...settings, ai_lookback_days: e.target.value})}
-                            />
-                            <span className="text-xs text-slate-500 whitespace-nowrap">{settings.ai_lookback_days} days of history</span>
-                          </div>
+                        <div className="pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save AI Engine Settings</Button>
                         </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="ai_context_window_hours">Real-Time Context Window (Hours: 1-24)</Label>
-                          <Input
-                            id="ai_context_window_hours"
-                            type="number"
-                            min="1"
-                            max="24"
-                            value={settings.ai_context_window_hours}
-                            onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
-                          />
-                        </div>
-                      </div>
+                      </form>
                     </CardContent>
                   </Card>
 
@@ -1728,27 +1733,32 @@ export default function App() {
                       <CardTitle>Climate Guardrails</CardTitle>
                       <CardDescription>Safety limits for AI-driven temperature adjustments.</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="climate_abs_min">Absolute Minimum Temperature (°F)</Label>
-                          <Input 
-                            id="climate_abs_min" 
-                            type="number" 
-                            value={settings.climate_abs_min}
-                            onChange={e => setSettings({...settings, climate_abs_min: e.target.value})}
-                          />
+                    <CardContent>
+                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="climate_abs_min">Absolute Minimum Temperature (°F)</Label>
+                            <Input
+                              id="climate_abs_min"
+                              type="number"
+                              value={settings.climate_abs_min}
+                              onChange={e => setSettings({...settings, climate_abs_min: e.target.value})}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="climate_abs_max">Absolute Maximum Temperature (°F)</Label>
+                            <Input
+                              id="climate_abs_max"
+                              type="number"
+                              value={settings.climate_abs_max}
+                              onChange={e => setSettings({...settings, climate_abs_max: e.target.value})}
+                            />
+                          </div>
                         </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="climate_abs_max">Absolute Maximum Temperature (°F)</Label>
-                          <Input 
-                            id="climate_abs_max" 
-                            type="number" 
-                            value={settings.climate_abs_max}
-                            onChange={e => setSettings({...settings, climate_abs_max: e.target.value})}
-                          />
+                        <div className="pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Guardrails</Button>
                         </div>
-                      </div>
+                      </form>
                     </CardContent>
                   </Card>
 
@@ -1792,12 +1802,21 @@ export default function App() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label htmlFor="github_branch">GitHub Update Branch</Label>
-                          <Input
-                            id="github_branch"
-                            value={settings.github_branch || 'main'}
-                            onChange={e => setSettings({...settings, github_branch: e.target.value})}
-                            placeholder="main"
-                          />
+                          <div className="flex items-center gap-2">
+                            <Input
+                              id="github_branch"
+                              value={settings.github_branch || 'main'}
+                              onChange={e => setSettings({...settings, github_branch: e.target.value})}
+                              placeholder="main"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => handleUpdateSingleSetting('github_branch', settings.github_branch || 'main')}
+                            >
+                              Save
+                            </Button>
+                          </div>
                           <p className="text-[10px] text-slate-400 italic">The branch to pull updates from (default: main).</p>
                         </div>
                       </div>
@@ -1911,7 +1930,7 @@ export default function App() {
                         id="dashboard_default_timeframe"
                         className="w-full max-w-xs p-2 border border-slate-200 rounded-md text-sm"
                         value={settings.dashboard_default_timeframe}
-                        onChange={e => setSettings({...settings, dashboard_default_timeframe: e.target.value})}
+                        onChange={e => handleUpdateSingleSetting('dashboard_default_timeframe', e.target.value)}
                       >
                         <option value="24h">Last 24 Hours</option>
                         <option value="7d">Last 7 Days</option>
