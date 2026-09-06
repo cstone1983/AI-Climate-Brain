@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Clock, Info, ChevronLeft, ChevronRight, Sun, Sunrise, Sunset, Moon, Coffee, Briefcase, GraduationCap, Home, User, BrainCircuit } from 'lucide-react';
+import { Button } from './ui/button';
 
 interface ScheduleEvent {
   time: string;
@@ -207,28 +208,5 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
         )}
       </div>
     </div>
-  );
-}
-
-// Internal Button component to avoid dependency issues if needed, but we have it in App.tsx
-function Button({ children, variant, size, onClick, disabled, className }: any) {
-  const baseStyles = "inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50";
-  const variants = {
-    ghost: "hover:bg-slate-100 text-slate-600",
-    outline: "border border-slate-200 bg-white hover:bg-slate-50 text-slate-600"
-  };
-  const sizes = {
-    sm: "h-8 px-3 text-xs",
-    md: "h-10 px-4 py-2 text-sm"
-  };
-
-  return (
-    <button 
-      onClick={onClick} 
-      disabled={disabled}
-      className={`${baseStyles} ${(variants as any)[variant || 'outline']} ${(sizes as any)[size || 'md']} ${className}`}
-    >
-      {children}
-    </button>
   );
 }

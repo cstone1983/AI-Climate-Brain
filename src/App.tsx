@@ -44,6 +44,7 @@ import { Label } from './components/ui/label';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ScheduleCalendar } from './components/ScheduleCalendar';
 import { RoutineTimeline } from './components/RoutineTimeline';
+import { AiContextManager } from './components/AiContextManager';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -84,7 +85,7 @@ export default function App() {
     ai_realtime_interval: '5',
     ai_lookback_days: '60',
     ai_context_window_hours: '2',
-    ai_model: 'gemini-3-flash-preview',
+    ai_model: 'claude-sonnet-5',
     climate_abs_min: '55',
     climate_abs_max: '80',
     dashboard_default_timeframe: '24h',
@@ -92,7 +93,7 @@ export default function App() {
     ghost_mode_whole_home: 'true',
     github_branch: 'main',
     database_type: 'sqlite',
-    gemini_api_key: ''
+    claude_api_key: ''
   });
 
   const [climateSettings, setClimateSettings] = useState({
@@ -150,9 +151,6 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState({ progress: 0, entity: '' });
   const [scanResults, setScanResults] = useState<{entity_id: string, reason: string}[]>([]);
   const [scheduleViewMode, setScheduleViewMode] = useState<'timeline' | 'calendar' | 'json'>('timeline');
-  const [newAiContextNote, setNewAiContextNote] = useState('');
-  const [editingAiContextNoteId, setEditingAiContextNoteId] = useState<string | null>(null);
-  const [editingAiContextNoteText, setEditingAiContextNoteText] = useState('');
   
   const historyFiltersRef = useRef(historyFilters);
   useEffect(() => {
@@ -318,60 +316,8 @@ export default function App() {
     fetchUsers();
   };
 
-  const getAiContextNotes = () => {
-    try {
-      const parsed = safeJsonParse(settings.user_ai_context, []);
-      if (Array.isArray(parsed)) return parsed;
-      if (settings.user_ai_context.trim()) return [{ id: Date.now().toString(), text: settings.user_ai_context }];
-      return [];
-    } catch (e) {
-      if (settings.user_ai_context.trim()) return [{ id: Date.now().toString(), text: settings.user_ai_context }];
-      return [];
-    }
-  };
-
-  const handleAddAiContextNote = async () => {
-    if (!newAiContextNote.trim()) return;
-    const notes = getAiContextNotes();
-    const newNotes = [...notes, { id: Date.now().toString(), text: newAiContextNote.trim() }];
-    const newContextString = JSON.stringify(newNotes);
+  const handleUpdateAiContext = async (newContextString: string) => {
     setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
-    setNewAiContextNote('');
-    
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_ai_context: newContextString })
-    });
-  };
-
-  const handleDeleteAiContextNote = async (id: string) => {
-    const notes = getAiContextNotes();
-    const newNotes = notes.filter((n: any) => n.id !== id);
-    const newContextString = JSON.stringify(newNotes);
-    setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
-    
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_ai_context: newContextString })
-    });
-  };
-
-  const handleStartEditAiContextNote = (id: string, text: string) => {
-    setEditingAiContextNoteId(id);
-    setEditingAiContextNoteText(text);
-  };
-
-  const handleSaveEditAiContextNote = async () => {
-    if (!editingAiContextNoteId) return;
-    const notes = getAiContextNotes();
-    const newNotes = notes.map((n: any) => n.id === editingAiContextNoteId ? { ...n, text: editingAiContextNoteText } : n);
-    const newContextString = JSON.stringify(newNotes);
-    setSettings(prev => ({ ...prev, user_ai_context: newContextString }));
-    setEditingAiContextNoteId(null);
-    setEditingAiContextNoteText('');
-    
     await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -892,19 +838,19 @@ export default function App() {
     });
   
   const chartData = Object.values(chartDataMap).sort((a: any, b: any) => a.timestamp - b.timestamp);
-  if (chartData.length === 0) {
-    // Fallback mock data if no real history for zones
-    chartData.push(
-      { time: '00:00', 'climate.zone_1_living_room': 68, 'climate.zone_2_master': 66 },
-      { time: '04:00', 'climate.zone_1_living_room': 67, 'climate.zone_2_master': 65 },
-      { time: '08:00', 'climate.zone_1_living_room': 70, 'climate.zone_2_master': 68 },
-      { time: '12:00', 'climate.zone_1_living_room': 72, 'climate.zone_2_master': 70 },
-      { time: '16:00', 'climate.zone_1_living_room': 73, 'climate.zone_2_master': 71 },
-      { time: '20:00', 'climate.zone_1_living_room': 71, 'climate.zone_2_master': 69 }
-    );
-  }
 
   const colors = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#eab308', '#06b6d4'];
+
+  // Real-time dashboard stats, derived from live entity/occupancy state (no fabricated defaults).
+  const climateTemps = entities
+    .filter(e => e.domain === 'climate')
+    .map(e => Number(e.attributes?.current_temperature))
+    .filter(t => !isNaN(t));
+  const avgTemp = climateTemps.length > 0
+    ? (climateTemps.reduce((sum, t) => sum + t, 0) / climateTemps.length).toFixed(1)
+    : null;
+  const activeLightsCount = entities.filter(e => e.domain === 'light' && e.state === 'on').length;
+  const peopleHomeCount = occupancyRoster.filter(p => p.status === 'home').length;
 
   return (
     <div className="min-h-screen bg-[#f5f5f5] flex font-sans text-slate-900">
@@ -985,7 +931,7 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-500">Avg Temperature</p>
-                      <h3 className="text-2xl font-bold">21.5°C</h3>
+                      <h3 className="text-2xl font-bold">{avgTemp !== null ? `${avgTemp}°F` : '—'}</h3>
                     </div>
                   </CardContent>
                 </Card>
@@ -996,7 +942,7 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-500">Active Lights</p>
-                      <h3 className="text-2xl font-bold">4</h3>
+                      <h3 className="text-2xl font-bold">{activeLightsCount}</h3>
                     </div>
                   </CardContent>
                 </Card>
@@ -1007,7 +953,7 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-500">People Home</p>
-                      <h3 className="text-2xl font-bold">2</h3>
+                      <h3 className="text-2xl font-bold">{peopleHomeCount}</h3>
                     </div>
                   </CardContent>
                 </Card>
@@ -1032,42 +978,52 @@ export default function App() {
                     </select>
                   </CardHeader>
                   <CardContent className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={chartData}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis 
-                          dataKey="timestamp" 
-                          type="number"
-                          domain={['dataMin', 'dataMax']}
-                          stroke="#64748b" 
-                          fontSize={10} 
-                          tickLine={false} 
-                          axisLine={false}
-                          tickFormatter={(ts) => {
-                            const d = new Date(ts);
-                            if (graphTimeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                            return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`;
-                          }}
-                        />
-                        <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} domain={['auto', 'auto']} />
-                        <Tooltip 
-                          labelFormatter={(ts) => new Date(ts).toLocaleString()}
-                          contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                        />
-                        {graphZones.map((zoneId: string, idx: number) => (
-                          <Line 
-                            key={zoneId}
-                            type="monotone" 
-                            dataKey={zoneId} 
-                            name={entities.find(e => e.entity_id === zoneId)?.friendly_name || zoneId}
-                            stroke={colors[idx % colors.length]} 
-                            strokeWidth={2} 
-                            dot={false}
-                            connectNulls={true}
+                    {chartData.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-center bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+                        <p className="text-slate-400 italic">
+                          {graphZones.length === 0
+                            ? 'No zones selected for the dashboard graph. Choose zones in Settings to see temperature history here.'
+                            : 'No temperature history yet for the selected zones and timeframe.'}
+                        </p>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                          <XAxis
+                            dataKey="timestamp"
+                            type="number"
+                            domain={['dataMin', 'dataMax']}
+                            stroke="#64748b"
+                            fontSize={10}
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={(ts) => {
+                              const d = new Date(ts);
+                              if (graphTimeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                              return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`;
+                            }}
                           />
-                        ))}
-                      </LineChart>
-                    </ResponsiveContainer>
+                          <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} domain={['auto', 'auto']} />
+                          <Tooltip
+                            labelFormatter={(ts) => new Date(ts).toLocaleString()}
+                            contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                          />
+                          {graphZones.map((zoneId: string, idx: number) => (
+                            <Line
+                              key={zoneId}
+                              type="monotone"
+                              dataKey={zoneId}
+                              name={entities.find(e => e.entity_id === zoneId)?.friendly_name || zoneId}
+                              stroke={colors[idx % colors.length]}
+                              strokeWidth={2}
+                              dot={false}
+                              connectNulls={true}
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -1684,16 +1640,16 @@ export default function App() {
                     <CardContent className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label htmlFor="ai_model">Gemini Model Selection</Label>
-                          <select 
+                          <Label htmlFor="ai_model">Claude Model Selection</Label>
+                          <select
                             id="ai_model"
                             className="w-full p-2 border border-slate-200 rounded-md text-sm"
                             value={settings.ai_model}
                             onChange={e => setSettings({...settings, ai_model: e.target.value})}
                           >
-                            <option value="gemini-3-flash-preview">Gemini 3 Flash (Fast & Efficient)</option>
-                            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Advanced Reasoning)</option>
-                            <option value="gemini-2.5-flash-latest">Gemini 2.5 Flash (Legacy)</option>
+                            <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
+                            <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
+                            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
                           </select>
                         </div>
                         <div className="space-y-2">
@@ -1934,59 +1890,7 @@ export default function App() {
                     </CardContent>
                   </Card>
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>AI Context Notes</CardTitle>
-                      <CardDescription>Provide manual context to the AI (e.g., "I will be out of work next Tuesday", "We have guests this weekend").</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          {getAiContextNotes().map((note: any) => (
-                            <div key={note.id} className="flex items-start gap-2 p-3 bg-slate-50 border border-slate-100 rounded-lg">
-                              {editingAiContextNoteId === note.id ? (
-                                <div className="flex-1 flex gap-2">
-                                  <textarea
-                                    className="flex-1 min-h-[60px] p-2 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-900 outline-none resize-y"
-                                    value={editingAiContextNoteText}
-                                    onChange={e => setEditingAiContextNoteText(e.target.value)}
-                                  />
-                                  <div className="flex flex-col gap-2">
-                                    <Button size="sm" onClick={handleSaveEditAiContextNote} className="bg-emerald-600 hover:bg-emerald-700 text-white">Save</Button>
-                                    <Button size="sm" variant="outline" onClick={() => setEditingAiContextNoteId(null)}>Cancel</Button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <>
-                                  <div className="flex-1 text-sm text-slate-700 whitespace-pre-wrap">{note.text}</div>
-                                  <div className="flex gap-1">
-                                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-400 hover:text-slate-600" onClick={() => handleStartEditAiContextNote(note.id, note.text)}>
-                                      <Edit2 className="h-4 w-4" />
-                                    </Button>
-                                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-400 hover:text-red-500" onClick={() => handleDeleteAiContextNote(note.id)}>
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          ))}
-                          {getAiContextNotes().length === 0 && (
-                            <div className="text-sm text-slate-500 italic p-4 text-center border border-dashed border-slate-200 rounded-lg">No context notes added yet.</div>
-                          )}
-                        </div>
-                        <div className="flex gap-2 items-start mt-4">
-                          <textarea
-                            className="flex-1 min-h-[80px] p-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none resize-y"
-                            placeholder="Add any upcoming events, schedule changes, or context the AI should know about..."
-                            value={newAiContextNote}
-                            onChange={e => setNewAiContextNote(e.target.value)}
-                          />
-                          <Button onClick={handleAddAiContextNote} className="bg-slate-900 text-white hover:bg-slate-800 h-10">Add Note</Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                  <AiContextManager userAiContext={settings.user_ai_context} onUpdate={handleUpdateAiContext} />
 
                   <Card>
                     <CardHeader>
@@ -2064,7 +1968,7 @@ export default function App() {
                         <div className="flex items-center justify-between">
                           <div className="space-y-1">
                             <p className="text-sm font-medium">Application Version</p>
-                            <p className="text-xs text-slate-500">Current Version: v1.0.4 (Stable)</p>
+                            <p className="text-xs text-slate-500">Current Version: v{__APP_VERSION__}</p>
                           </div>
                           <div className="flex gap-2">
                             <Button 
@@ -2239,26 +2143,26 @@ export default function App() {
                 <>
                   <Card>
                     <CardHeader>
-                      <CardTitle>Gemini API Key</CardTitle>
-                      <CardDescription>Configure your Google Gemini API key for AI features.</CardDescription>
+                      <CardTitle>Claude API Key</CardTitle>
+                      <CardDescription>Configure your Anthropic Claude API key for AI features.</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <form onSubmit={handleSaveSettings} className="space-y-4">
                         <div className="grid grid-cols-1 gap-4">
                           <div className="space-y-2">
-                            <Label htmlFor="gemini_api_key">API Key</Label>
-                            <Input 
-                              id="gemini_api_key" 
-                              type="password" 
+                            <Label htmlFor="claude_api_key">API Key</Label>
+                            <Input
+                              id="claude_api_key"
+                              type="password"
                               autoComplete="new-password"
-                              placeholder="AIzaSy..." 
-                              value={settings.gemini_api_key || ''}
-                              onChange={e => setSettings({...settings, gemini_api_key: e.target.value})}
+                              placeholder="sk-ant-..."
+                              value={settings.claude_api_key || ''}
+                              onChange={e => setSettings({...settings, claude_api_key: e.target.value})}
                             />
                           </div>
                         </div>
                         <div className="flex items-center gap-4 pt-2">
-                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Gemini Key</Button>
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Claude Key</Button>
                         </div>
                       </form>
                     </CardContent>

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
@@ -7,7 +8,7 @@ import { fileURLToPath } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import { exec } from "child_process";
 import util from "util";
-import { GoogleGenAI, Type } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 import pg from "pg";
 import session from "express-session";
 
@@ -40,6 +41,44 @@ function safeAiParse(text: string | undefined, fallback: any = {}) {
     return fallback;
   }
 }
+
+// Forces structured JSON output the same way Gemini's responseSchema used to,
+// via Claude's tool-use: define one tool whose input_schema is the desired
+// JSON shape, force the model to call it, and read the parsed input straight
+// off the tool_use block (no text/fence parsing needed).
+async function callClaudeJson(apiKey: string, model: string, prompt: string, schema: any, maxTokens: number = 4096): Promise<any> {
+  const anthropic = new Anthropic({ apiKey });
+  const response = await anthropic.messages.create({
+    model,
+    max_tokens: maxTokens,
+    tools: [{
+      name: "provide_structured_response",
+      description: "Provide the analysis result in the required structured format.",
+      input_schema: schema
+    }],
+    tool_choice: { type: "tool", name: "provide_structured_response" },
+    messages: [{ role: "user", content: prompt }]
+  });
+
+  const toolUse = response.content.find((block: any) => block.type === "tool_use") as any;
+  if (!toolUse) {
+    throw new Error("Claude did not return a structured tool response.");
+  }
+  return toolUse.input;
+}
+
+// Fallback entities shown when Home Assistant is unreachable, so the UI has
+// something to render instead of an empty screen. Shared by every route that
+// needs to degrade gracefully when fetchHA() returns nothing.
+const MOCK_HA_ENTITIES = [
+  { entity_id: 'climate.zone_1_living_room', attributes: { friendly_name: 'Zone 1 (Living Room)' } },
+  { entity_id: 'climate.zone_2_master', attributes: { friendly_name: 'Zone 2 (Master Bed)' } },
+  { entity_id: 'climate.zone_3_kids', attributes: { friendly_name: 'Zone 3 (Kids Room)' } },
+  { entity_id: 'climate.zone_4_basement', attributes: { friendly_name: 'Zone 4 (Basement)' } },
+  { entity_id: 'person.chris', attributes: { friendly_name: 'Chris' } },
+  { entity_id: 'device_tracker.kids_ipad', attributes: { friendly_name: 'Kids iPad' } },
+  { entity_id: 'light.kitchen', attributes: { friendly_name: 'Kitchen Lights' } }
+];
 
 function filterTransitions(history: any[]) {
   const transitions: any[] = [];
@@ -99,7 +138,8 @@ if (dbUrl) {
           
             CREATE TABLE IF NOT EXISTS tracked_entities (
               entity_id TEXT PRIMARY KEY,
-              tracked BOOLEAN DEFAULT TRUE
+              tracked BOOLEAN DEFAULT TRUE,
+              notes TEXT DEFAULT ''
             );
           
             CREATE TABLE IF NOT EXISTS insights (
@@ -183,7 +223,7 @@ if (fs.existsSync(OLD_DB_PATH) && !fs.existsSync(DB_PATH)) {
 
 const db = new Database(DB_PATH);
 
-const CURRENT_DB_VERSION = 2; // Increment this when adding new migrations
+const CURRENT_DB_VERSION = 3; // Increment this when adding new migrations
 
 function parseUserContext(rawValue: string): string {
   if (!rawValue) return "";
@@ -284,7 +324,9 @@ function initializeDatabase() {
         domain TEXT,
         attributes TEXT
       );
-    
+
+      -- Reserved for future use: currently only copied by the SQLite<->Postgres
+      -- migration, no route reads or populates it from Home Assistant yet.
       CREATE TABLE IF NOT EXISTS ha_rules (
         entity_id TEXT PRIMARY KEY,
         name TEXT,
@@ -314,7 +356,14 @@ function initializeDatabase() {
 
   // 4. Sequential Migrations
   if (currentVersion < 2) {
-    // ... existing migration 2 ...
+    console.log("Applying Migration: Version 2 (Adding notes to tracked_entities)");
+    try {
+      db.exec("ALTER TABLE tracked_entities ADD COLUMN notes TEXT DEFAULT ''");
+    } catch (e) {
+      console.warn("Migration V2 Warning: 'notes' column might already exist.");
+    }
+    currentVersion = 2;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
   }
 
   if (currentVersion < 3) {
@@ -332,12 +381,17 @@ function initializeDatabase() {
   const insertSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
   insertSetting.run("ha_url", "http://homeassistant.local:8123");
   insertSetting.run("ha_token", "");
-  insertSetting.run("user_ai_context", "");
+  insertSetting.run("user_ai_context", JSON.stringify([
+    {
+      id: "seed-household-context",
+      text: "Chris is the primary resident, with a professional anchor of an early morning departure (~6:00 AM) and a coastal commute — treat this as the working baseline when it recurs 3+ times a week. Key devices that indicate a 'Project State' when active: a Dell PowerEdge server and a Bambu X1C 3D printer. A Blackstone griddle indicates outdoor cooking/hosting. The solar/heat pump system is branded 'Utility Zero' — cross-reference its production data with Chris's presence to see if projects start when solar production is high."
+    }
+  ]));
   insertSetting.run("dashboard_graph_zones", "[]");
   insertSetting.run("ai_realtime_interval", "5");
   insertSetting.run("ai_lookback_days", "60");
   insertSetting.run("ai_context_window_hours", "2");
-  insertSetting.run("ai_model", "gemini-3-flash-preview");
+  insertSetting.run("ai_model", "claude-sonnet-5");
   insertSetting.run("climate_abs_min", "55");
   insertSetting.run("climate_abs_max", "80");
   insertSetting.run("dashboard_default_timeframe", "24h");
@@ -793,17 +847,14 @@ async function sendTelegramAlert(message: string) {
 // --- Daily AI Analysis ---
 async function runDailyAnalysis() {
   try {
-    const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
+    const aiModel = getSetting("ai_model", "claude-sonnet-5");
     const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
-    
+    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
+
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      const msg = "Gemini API Key is not configured in settings.";
-      console.error(msg);
-      throw new Error(msg);
+      console.warn("Claude API Key is not configured in settings. Skipping daily analysis.");
+      return {};
     }
-    
-    const ai = new GoogleGenAI({ apiKey });
 
     // Fetch context
     const states = await fetchHA('/api/states') || [];
@@ -906,15 +957,15 @@ async function runDailyAnalysis() {
       You are the HomeBrain Intelligence Engine. Your core logic is built on "Behavioral Heuristics"—you do not just see logs; you see human intent.
 
       ### CORE LOGIC ADJUSTMENTS:
-      1. THE ANCHOR RULE: Identify "Professional Anchors." For Chris, this is an early morning departure (~6:00 AM) and a coastal commute. When this happens 3+ times a week, define the median times as the "Working Baseline."
-      2. DEVICE PROXY LOGIC: 
+      1. THE ANCHOR RULE: Identify "Professional Anchors" for the household's residents (e.g., a consistent early-morning departure and commute pattern). When a pattern occurs 3+ times a week, define the median times as the "Working Baseline." Use USER PROVIDED CONTEXT below for the specific residents and their known routines.
+      2. DEVICE PROXY LOGIC:
          - If lights are OFF but a person is HOME, prioritize the state "Sleeping/Resting" over "Inactive."
-         - High wattage on the "Dell PowerEdge" or "Bambu X1C" indicates a "Project State."
-         - If the "Blackstone" or "Kitchen" entities are active, enter "Cooking/Hosting State."
-      3. TRANSITION ANALYSIS: 
-         - A "Home -> Not Home -> Home" sequence under 90 minutes is an "Errand." 
+         - High activity/wattage on any specific workstation, workshop, or hobby devices named in USER PROVIDED CONTEXT indicates a "Project State."
+         - If kitchen or outdoor-cooking entities named in USER PROVIDED CONTEXT are active, enter "Cooking/Hosting State."
+      3. TRANSITION ANALYSIS:
+         - A "Home -> Not Home -> Home" sequence under 90 minutes is an "Errand."
          - A "Not Home" state lasting >10 hours is "Overtime/Project Site."
-      4. ENVIRONMENTAL CORRELATION: Always cross-reference "Utility Zero" solar/heat pump data with Chris's presence. Does he start projects when solar production is high?
+      4. ENVIRONMENTAL CORRELATION: Cross-reference any solar/heat-pump production data named in USER PROVIDED CONTEXT with resident presence. Does activity increase when solar production is high?
 
       ### ANALYSIS GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
@@ -948,62 +999,54 @@ async function runDailyAnalysis() {
       }
     `;
 
-    const response = await ai.models.generateContent({
-      model: aiModel,
-      contents: prompt,
-      config: { 
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
+    const result = await callClaudeJson(apiKey, aiModel, prompt, {
+      type: "object",
+      properties: {
+        insights: {
+          type: "array",
+          items: { type: "string" }
+        },
+        reasoning: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              context: { type: "string" },
+              decision: { type: "string" },
+              reasoning: { type: "string" },
+              evidence: { type: "string", description: "Specific data points or history events that support this decision" }
+            },
+            required: ["context", "decision", "reasoning", "evidence"]
+          }
+        },
+        schedule: {
+          type: "object",
           properties: {
-            insights: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            },
-            reasoning: {
-              type: Type.ARRAY,
+            name: { type: "string" },
+            description: { type: "string" },
+            schedule_data: {
+              type: "array",
               items: {
-                type: Type.OBJECT,
+                type: "object",
                 properties: {
-                  context: { type: Type.STRING },
-                  decision: { type: Type.STRING },
-                  reasoning: { type: Type.STRING },
-                  evidence: { type: Type.STRING, description: "Specific data points or history events that support this decision" }
+                  day: { type: "string", description: "Day of the week (e.g., Monday)" },
+                  time: { type: "string", description: "Time in 24h format (e.g., 07:30)" },
+                  action: { type: "string", description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
+                  entity_id: { type: "string" },
+                  state: { type: "string" },
+                  reasoning: { type: "string", description: "Specific reasoning for this individual event" },
+                  evidence: { type: "string", description: "The specific data point (e.g. motion sensor trigger time) that led to this schedule entry" }
                 },
-                required: ["context", "decision", "reasoning", "evidence"]
+                required: ["day", "time", "action", "entity_id", "state", "evidence"]
               }
-            },
-            schedule: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                description: { type: Type.STRING },
-                schedule_data: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      day: { type: Type.STRING, description: "Day of the week (e.g., Monday)" },
-                      time: { type: Type.STRING, description: "Time in 24h format (e.g., 07:30)" },
-                      action: { type: Type.STRING, description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
-                      entity_id: { type: Type.STRING },
-                      state: { type: Type.STRING },
-                      reasoning: { type: Type.STRING, description: "Specific reasoning for this individual event" },
-                      evidence: { type: Type.STRING, description: "The specific data point (e.g. motion sensor trigger time) that led to this schedule entry" }
-                    },
-                    required: ["day", "time", "action", "entity_id", "state", "evidence"]
-                  }
-                }
-              },
-              required: ["name", "schedule_data"]
             }
           },
-          required: ["insights", "reasoning", "schedule"]
+          required: ["name", "schedule_data"]
         }
-      }
-    });
+      },
+      required: ["insights", "reasoning", "schedule"]
+    }, 8192);
 
-    const result = safeAiParse(response.text);
     if (!result.schedule) {
       throw new Error("AI returned invalid JSON format or missing schedule. Please try again.");
     }
@@ -1050,8 +1093,8 @@ async function runDailyAnalysis() {
     return result;
 
   } catch (e: any) {
-    if (e.message && e.message.includes("API key not valid")) {
-      console.warn("Skipping daily analysis: API key not valid.");
+    if (e.status === 401 || (e.message && e.message.includes("authentication_error"))) {
+      console.warn("Skipping daily analysis: Claude API key not valid.");
       return {};
     }
     console.error("Daily analysis error", e);
@@ -1066,16 +1109,14 @@ setInterval(runDailyAnalysis, 24 * 60 * 60 * 1000);
 // --- Real-time AI Control Loop ---
 async function executeRealTimeAIControl() {
   try {
-    const aiModel = getSetting("ai_model", "gemini-3-flash-preview");
+    const aiModel = getSetting("ai_model", "claude-sonnet-5");
     const contextWindowHours = Number(getSetting("ai_context_window_hours", "2"));
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
-    
+    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
+
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      console.warn("Gemini API Key is not configured in settings. Skipping real-time control.");
+      console.warn("Claude API Key is not configured in settings. Skipping real-time control.");
       return;
     }
-    
-    const ai = new GoogleGenAI({ apiKey });
 
     const settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
     const settings: Record<string, string> = {};
@@ -1085,6 +1126,7 @@ async function executeRealTimeAIControl() {
 
     const ghostModeHvac = settings.ghost_mode_hvac === 'true';
     const ghostModeWholeHome = settings.ghost_mode_whole_home === 'true';
+    const userContext = parseUserContext(settings.user_ai_context || "");
 
     // Task 1: Fetch Occupancy Roster (Strict Initialization)
     const occupancyRoster = db.prepare("SELECT * FROM occupancy_roster").all() as any[] || [];
@@ -1138,15 +1180,15 @@ async function executeRealTimeAIControl() {
       You are the HomeBrain Intelligence Engine. Your core logic is built on "Behavioral Heuristics"—you do not just see logs; you see human intent.
 
       ### CORE LOGIC ADJUSTMENTS:
-      1. THE ANCHOR RULE: Identify "Professional Anchors." For Chris, this is an early morning departure (~6:00 AM) and a coastal commute. When this happens 3+ times a week, define the median times as the "Working Baseline."
-      2. DEVICE PROXY LOGIC: 
+      1. THE ANCHOR RULE: Identify "Professional Anchors" for the household's residents (e.g., a consistent early-morning departure and commute pattern). When a pattern occurs 3+ times a week, define the median times as the "Working Baseline." Use USER PROVIDED CONTEXT below for the specific residents and their known routines.
+      2. DEVICE PROXY LOGIC:
          - If lights are OFF but a person is HOME, prioritize the state "Sleeping/Resting" over "Inactive."
-         - High wattage on the "Dell PowerEdge" or "Bambu X1C" indicates a "Project State."
-         - If the "Blackstone" or "Kitchen" entities are active, enter "Cooking/Hosting State."
-      3. TRANSITION ANALYSIS: 
-         - A "Home -> Not Home -> Home" sequence under 90 minutes is an "Errand." 
+         - High activity/wattage on any specific workstation, workshop, or hobby devices named in USER PROVIDED CONTEXT indicates a "Project State."
+         - If kitchen or outdoor-cooking entities named in USER PROVIDED CONTEXT are active, enter "Cooking/Hosting State."
+      3. TRANSITION ANALYSIS:
+         - A "Home -> Not Home -> Home" sequence under 90 minutes is an "Errand."
          - A "Not Home" state lasting >10 hours is "Overtime/Project Site."
-      4. ENVIRONMENTAL CORRELATION: Always cross-reference "Utility Zero" solar/heat pump data with Chris's presence. Does he start projects when solar production is high?
+      4. ENVIRONMENTAL CORRELATION: Cross-reference any solar/heat-pump production data named in USER PROVIDED CONTEXT with resident presence. Does activity increase when solar production is high?
 
       ### REAL-TIME INSTRUCTIONS:
       1. Analyze the current state and recent history to determine the home state and if actions are needed.
@@ -1160,7 +1202,10 @@ async function executeRealTimeAIControl() {
 
       ### OUTPUT STYLE:
       Always analyze data chronologically. Before answering, perform an internal "Chain of Thought" step to identify consistency vs. outliers. Speak as a collaborative partner in managing the home.
-      
+
+      USER PROVIDED CONTEXT:
+      ${userContext}
+
       SYSTEM SNAPSHOT: ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       OCCUPANCY STATUS (People): ${JSON.stringify(occupancyRoster)}
@@ -1177,45 +1222,36 @@ async function executeRealTimeAIControl() {
       }
     `;
 
-    const response = await ai.models.generateContent({
-      model: aiModel,
-      contents: prompt,
-      config: { 
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            inferred_home_state: { 
-              type: Type.STRING,
-              description: "The current inferred state of the home."
+    const result = await callClaudeJson(apiKey, aiModel, prompt, {
+      type: "object",
+      properties: {
+        inferred_home_state: {
+          type: "string",
+          description: "The current inferred state of the home."
+        },
+        confidence_score: {
+          type: "integer",
+          description: "Confidence level of the inference (0-100)."
+        },
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string" },
+              domain: { type: "string" },
+              service: { type: "string" },
+              entity_id: { type: "string" },
+              service_data: { type: "object" },
+              reasoning: { type: "string" }
             },
-            confidence_score: { 
-              type: Type.INTEGER,
-              description: "Confidence level of the inference (0-100)."
-            },
-            actions: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  type: { type: Type.STRING },
-                  domain: { type: Type.STRING },
-                  service: { type: Type.STRING },
-                  entity_id: { type: Type.STRING },
-                  service_data: { type: Type.OBJECT },
-                  reasoning: { type: Type.STRING }
-                },
-                required: ["type", "domain", "service", "entity_id", "reasoning"]
-              }
-            }
-          },
-          required: ["inferred_home_state", "confidence_score", "actions"]
+            required: ["type", "domain", "service", "entity_id", "reasoning"]
+          }
         }
-      }
+      },
+      required: ["inferred_home_state", "confidence_score", "actions"]
     });
 
-    const result = safeAiParse(response.text);
-    
     // Task 4: Fail-Safe Defaults
     if (result.confidence_score === undefined || result.confidence_score === null) {
       console.warn("AI returned missing or null confidence_score. Ignoring actions.");
@@ -1287,8 +1323,8 @@ async function executeRealTimeAIControl() {
       if (result.actions.length > 0) broadcastToFrontend({ type: 'NEW_REASONING' });
     }
   } catch (error: any) {
-    if (error.message && error.message.includes("API key not valid")) {
-      console.warn("Skipping real-time control: API key not valid.");
+    if (error.status === 401 || (error.message && error.message.includes("authentication_error"))) {
+      console.warn("Skipping real-time control: Claude API key not valid.");
       return;
     }
     // Task 4: Traceback Visibility
@@ -2403,23 +2439,14 @@ app.get("/api/reasoning", async (req, res) => {
 
 app.post("/api/ai/scan-entities", async (req, res) => {
   try {
-    const apiKey = getSetting("gemini_api_key", process.env.GEMINI_API_KEY || "");
+    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      throw new Error("Gemini API Key is not configured in settings.");
+      throw new Error("Claude API Key is not configured in settings.");
     }
-    const ai = new GoogleGenAI({ apiKey });
-    
+
     let states = await fetchHA('/api/states');
     if (!states) {
-      states = [
-        { entity_id: 'climate.zone_1_living_room', attributes: { friendly_name: 'Zone 1 (Living Room)' } },
-        { entity_id: 'climate.zone_2_master', attributes: { friendly_name: 'Zone 2 (Master Bed)' } },
-        { entity_id: 'climate.zone_3_kids', attributes: { friendly_name: 'Zone 3 (Kids Room)' } },
-        { entity_id: 'climate.zone_4_basement', attributes: { friendly_name: 'Zone 4 (Basement)' } },
-        { entity_id: 'person.anthony', attributes: { friendly_name: 'Anthony' } },
-        { entity_id: 'device_tracker.kids_ipad', attributes: { friendly_name: 'Kids iPad' } },
-        { entity_id: 'light.kitchen', attributes: { friendly_name: 'Kitchen Lights' } }
-      ];
+      states = MOCK_HA_ENTITIES;
     }
 
     const entityList = states.map((e: any) => ({
@@ -2428,40 +2455,39 @@ app.post("/api/ai/scan-entities", async (req, res) => {
       domain: e.entity_id.split('.')[0]
     }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system. 
+    const aiModel = getSetting("ai_model", "claude-sonnet-5");
+    const result = await callClaudeJson(apiKey, aiModel, `Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system.
       Focus on:
       1. Climate/Thermostat entities.
       2. Temperature/Humidity sensors.
       3. Presence/Occupancy sensors (person, device_tracker, binary_sensor.motion).
       4. Main lights or switches that indicate occupancy or activity.
-      
-      Return a JSON array of objects with 'entity_id' and a brief 'reason' why it should be tracked.
-      
-      Entities: ${JSON.stringify(entityList.slice(0, 300))} (truncated if too many)`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
+
+      Return the entities with a brief reason why each should be tracked.
+
+      Entities: ${JSON.stringify(entityList.slice(0, 300))} (truncated if too many)`, {
+      type: "object",
+      properties: {
+        suggestions: {
+          type: "array",
           items: {
-            type: Type.OBJECT,
+            type: "object",
             properties: {
-              entity_id: { type: Type.STRING },
-              reason: { type: Type.STRING }
+              entity_id: { type: "string" },
+              reason: { type: "string" }
             },
             required: ["entity_id", "reason"]
           }
         }
-      }
+      },
+      required: ["suggestions"]
     });
 
-    const suggestions = safeAiParse(response.text, []);
-    res.json(suggestions);
+    res.json(result.suggestions || []);
 
   } catch (e: any) {
-    if (e.message && e.message.includes("API key not valid")) {
-      console.warn("Skipping AI scan: API key not valid.");
+    if (e.status === 401 || (e.message && e.message.includes("authentication_error"))) {
+      console.warn("Skipping AI scan: Claude API key not valid.");
       return res.status(400).json({ error: "API key not valid. Please pass a valid API key." });
     }
     console.error("AI Scan failed", e.message);
@@ -2512,21 +2538,15 @@ app.get("/api/ha/entities", async (req, res) => {
     let states = await fetchHA('/api/states');
     if (!states) {
       // Provide mock states for preview environment if HA is not connected
-      states = [
-        { entity_id: 'climate.zone_1_living_room', attributes: { friendly_name: 'Zone 1 (Living Room)' } },
-        { entity_id: 'climate.zone_2_master', attributes: { friendly_name: 'Zone 2 (Master Bed)' } },
-        { entity_id: 'climate.zone_3_kids', attributes: { friendly_name: 'Zone 3 (Kids Room)' } },
-        { entity_id: 'climate.zone_4_basement', attributes: { friendly_name: 'Zone 4 (Basement)' } },
-        { entity_id: 'person.anthony', attributes: { friendly_name: 'Anthony' } },
-        { entity_id: 'device_tracker.kids_ipad', attributes: { friendly_name: 'Kids iPad' } },
-        { entity_id: 'light.kitchen', attributes: { friendly_name: 'Kitchen Lights' } }
-      ];
+      states = MOCK_HA_ENTITIES;
     }
     
     const entities = states.map((s: any) => ({
       entity_id: s.entity_id,
       friendly_name: s.attributes.friendly_name || s.entity_id,
-      domain: s.entity_id.split('.')[0]
+      domain: s.entity_id.split('.')[0],
+      state: s.state,
+      attributes: s.attributes
     }));
     
     let trackedRows: any[] = [];
