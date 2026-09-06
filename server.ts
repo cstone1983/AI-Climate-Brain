@@ -11,6 +11,7 @@ import util from "util";
 import Anthropic from "@anthropic-ai/sdk";
 import pg from "pg";
 import session from "express-session";
+import bcrypt from "bcryptjs";
 
 // Extend express-session to include user
 declare module 'express-session' {
@@ -275,7 +276,7 @@ app.use(session({
   }
 }));
 
-const CURRENT_DB_VERSION = 3; // Increment this when adding new migrations
+const CURRENT_DB_VERSION = 4; // Increment this when adding new migrations
 
 function parseUserContext(rawValue: string): string {
   if (!rawValue) return "";
@@ -429,6 +430,24 @@ function initializeDatabase() {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
   }
 
+  if (currentVersion < 4) {
+    console.log("Applying Migration: Version 4 (Hashing plaintext user passwords)");
+    try {
+      const users = db.prepare("SELECT id, password FROM users").all() as any[];
+      const rehash = db.prepare("UPDATE users SET password = ? WHERE id = ?");
+      for (const user of users) {
+        // bcrypt hashes always start with $2a$/$2b$/$2y$ - anything else is legacy plaintext.
+        if (!/^\$2[aby]\$/.test(user.password || "")) {
+          rehash.run(bcrypt.hashSync(user.password || "", 10), user.id);
+        }
+      }
+    } catch (e) {
+      console.warn("Migration V4 Warning: failed to hash existing passwords.", e);
+    }
+    currentVersion = 4;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(String(currentVersion));
+  }
+
   // 5. Default Settings & Admin User
   const insertSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
   insertSetting.run("ha_url", "http://homeassistant.local:8123");
@@ -452,7 +471,7 @@ function initializeDatabase() {
   insertSetting.run("github_branch", "main");
 
   const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)");
-  insertUser.run("admin", "admin", "admin");
+  insertUser.run("admin", bcrypt.hashSync("admin", 10), "admin");
 
   console.log("Database initialization complete.");
 }
@@ -1402,13 +1421,13 @@ startRealTimeAIControl();
 
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
-  
+
   const dbType = getSetting("database_type", "sqlite");
   let user: any = null;
 
   if (dbType === "postgresql" && pgPool && pgReady) {
     try {
-      const result = await pgPool.query("SELECT * FROM users WHERE username = $1 AND password = $2", [username, password]);
+      const result = await pgPool.query("SELECT * FROM users WHERE username = $1", [username]);
       user = result.rows[0];
     } catch (e) {
       console.error("PostgreSQL auth failed:", e);
@@ -1416,16 +1435,35 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   if (!user) {
-    user = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?").get(username, password) as any;
+    user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
   }
 
-  if (user) {
+  if (user && password && bcrypt.compareSync(password, user.password)) {
     const userData = { id: user.id, username: user.username, role: user.role };
     req.session.user = userData;
     res.json({ success: true, user: userData });
   } else {
     res.status(401).json({ success: false, error: "Invalid credentials" });
   }
+});
+
+// Require an authenticated session for every /api/* route below this point,
+// except the auth routes themselves (login needs to be reachable while
+// logged out; me/logout need to work whether or not a session exists).
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.session.user) return next();
+  res.status(401).json({ success: false, error: "Not authenticated" });
+}
+
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.session.user?.role === "admin") return next();
+  res.status(403).json({ success: false, error: "Admin access required" });
+}
+
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/auth/")) return next();
+  if (req.path.startsWith("/api/")) return requireAuth(req, res, next);
+  next();
 });
 
 app.get("/api/auth/me", (req, res) => {
@@ -1446,7 +1484,7 @@ app.post("/api/auth/logout", (req, res) => {
   });
 });
 
-app.get("/api/users", async (req, res) => {
+app.get("/api/users", requireAdmin, async (req, res) => {
   if (pgPool && pgReady) {
     try {
       const result = await pgPool.query("SELECT id, username, role FROM users");
@@ -1459,24 +1497,25 @@ app.get("/api/users", async (req, res) => {
   res.json(users);
 });
 
-app.post("/api/users", async (req, res) => {
+app.post("/api/users", requireAdmin, async (req, res) => {
   const { username, password, role } = req.body;
   try {
+    const hashedPassword = bcrypt.hashSync(password, 10);
     if (pgPool && pgReady) {
       await pgPool.query(
         "INSERT INTO users (username, password, role) VALUES ($1, $2, $3)",
-        [username, password, role]
+        [username, hashedPassword, role]
       );
     }
     const stmt = db.prepare("INSERT INTO users (username, password, role) VALUES (?, ?, ?)");
-    stmt.run(username, password, role);
+    stmt.run(username, hashedPassword, role);
     res.json({ success: true });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
 });
 
-app.delete("/api/users/:id", async (req, res) => {
+app.delete("/api/users/:id", requireAdmin, async (req, res) => {
   try {
     if (pgPool && pgReady) {
       await pgPool.query("DELETE FROM users WHERE id = $1", [req.params.id]);
