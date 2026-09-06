@@ -782,16 +782,27 @@ function connectToHA() {
         // Real-time Self-Correction Logic
         // Only fire when someone actually just arrived home (a genuine
         // not-home -> home transition), not on every attribute-only update
-        // (GPS/battery/etc.) HA sends while an entity stays "home".
+        // (GPS/battery/etc.) HA sends while an entity stays "home". Also
+        // debounce against flapping trackers/connectivity: if this same
+        // entity was already "home" within the last 10 minutes, treat this
+        // as a bounce rather than a fresh arrival worth alerting on.
         const oldState = msg.event.data.old_state?.state;
         if ((entity_id.startsWith('person.') || entity_id.startsWith('device_tracker.')) && state === 'home' && oldState !== 'home') {
-           const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now'))");
-           insertReasoning.run(
-             "Real-time Presence Event",
-             "Self-Correction Triggered",
-             `Detected ${entity_id} arriving home unexpectedly or triggering a state change. Overriding schedule to ensure comfort in active zones.`
-           );
-           broadcastToFrontend({ type: 'NEW_REASONING' });
+           const recentHome = db.prepare(`
+             SELECT id FROM device_history
+             WHERE entity_id = ? AND state = 'home' AND id != ? AND last_changed >= datetime('now', '-10 minutes')
+             ORDER BY last_changed DESC LIMIT 1
+           `).get(entity_id, info.lastInsertRowid);
+
+           if (!recentHome) {
+             const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now'))");
+             insertReasoning.run(
+               "Real-time Presence Event",
+               "Self-Correction Triggered",
+               `Detected ${entity_id} arriving home unexpectedly or triggering a state change. Overriding schedule to ensure comfort in active zones.`
+             );
+             broadcastToFrontend({ type: 'NEW_REASONING' });
+           }
         }
 
         // Broadcast to frontend (guard in case the row lookup somehow misses)
