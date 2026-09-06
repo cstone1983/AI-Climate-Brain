@@ -810,7 +810,7 @@ export default function App() {
   const chartDataMap: Record<string, any> = {};
   
     graphData.forEach(item => {
-      if (graphZones.includes(item.entity_id)) {
+      if (item?.last_changed && graphZones.includes(item.entity_id)) {
         // Handle both normalized and ISO timestamps
         const tsStr = item.last_changed.includes('T') || item.last_changed.includes('+') || item.last_changed.includes('Z') 
           ? item.last_changed 
@@ -1274,11 +1274,11 @@ export default function App() {
                       size="sm" 
                       onClick={() => {
                         const headers = ["Time", "Entity ID", "State", "Attributes"];
-                        const rows = history.map(item => [
+                        const rows = history.filter(item => item?.last_changed).map(item => [
                           new Date(item.last_changed + (item.last_changed.includes('Z') ? '' : 'Z')).toLocaleString(),
                           item.entity_id,
                           item.state,
-                          item.attributes.replace(/"/g, '""')
+                          (item.attributes || '').replace(/"/g, '""')
                         ]);
                         const csvContent = [
                           headers.join(","),
@@ -1392,7 +1392,7 @@ export default function App() {
                             </td>
                           </tr>
                         )}
-                        {history.length > 0 ? history.map((item: any) => (
+                        {history.length > 0 ? history.filter((item: any) => item?.last_changed).map((item: any) => (
                           <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                             <td className="px-6 py-4 whitespace-nowrap text-slate-600">
                               {new Date(item.last_changed + (item.last_changed.includes('Z') ? '' : 'Z')).toLocaleString()}
