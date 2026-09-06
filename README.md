@@ -1,10 +1,10 @@
-# AI Smart Home Dashboard
+# HomeBrain AI
 
-A full-stack, AI-powered smart home dashboard built with React, Vite, Express, and Tailwind CSS. It integrates with Home Assistant, Gemini API, and Telegram for intelligent smart home management and notifications.
+A full-stack, AI-powered smart home dashboard built with React, Vite, Express, and Tailwind CSS. It integrates with Home Assistant, Claude, and Telegram for intelligent smart home management and notifications, with HVAC autopilot (predictive, occupancy-aware climate scheduling) as its flagship feature.
 
 ## Features
-- **Home Assistant Integration:** View and control your smart home entities.
-- **AI Automation Engine:** Uses Gemini to intelligently analyze home state and trigger automations.
+- **Home Assistant Integration:** View entities, track occupancy, and sync automations/scripts for AI context.
+- **AI Automation Engine:** Uses Claude to analyze home state and history, then generates rolling multi-day HVAC/whole-home schedules and real-time control decisions.
 - **Telegram Notifications:** Get real-time alerts and summaries sent directly to your phone.
 - **Settings Dashboard:** Configure API keys, URLs, and tokens directly from the UI.
 
@@ -51,7 +51,7 @@ Once the script completes, you can access the dashboard by navigating to your se
 http://<your-server-ip>
 ```
 
-Go to the **Settings** tab in the dashboard to configure your Home Assistant URL, Gemini API Key, and Telegram Bot details.
+Go to the **Settings** tab in the dashboard to configure your Home Assistant URL, Claude API Key, and Telegram Bot details.
 
 ## Manual Development Setup
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AI Smart Home Dashboard - Linux Installation Script
+# HomeBrain AI - Linux Installation Script
 # This script configures the app to run at boot via systemd and serves it on port 80 via Nginx.
 
 if [ "$EUID" -ne 0 ]; then
@@ -12,7 +12,7 @@ APP_USER=${SUDO_USER:-$(whoami)}
 APP_DIR=$(pwd)
 
 echo "====================================================="
-echo " Installing AI Smart Home Dashboard"
+echo " Installing HomeBrain AI"
 echo " User: $APP_USER"
 echo " Directory: $APP_DIR"
 echo "====================================================="
@@ -28,7 +28,7 @@ echo "-> Creating systemd service at $SERVICE_FILE..."
 
 cat <<EOF > $SERVICE_FILE
 [Unit]
-Description=AI Smart Home Dashboard
+Description=HomeBrain AI
 After=network.target
 
 [Service]
