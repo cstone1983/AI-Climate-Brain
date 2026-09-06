@@ -48,7 +48,7 @@ import { AiContextManager } from './components/AiContextManager';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [settingsTab, setSettingsTab] = useState('general');
+  const [settingsTab, setSettingsTab] = useState('ai');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [currentUser, setCurrentUser] = useState<{id: number, username: string, role: string} | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -1613,24 +1613,52 @@ export default function App() {
 
           {activeTab === 'settings' && (
             <div className="max-w-4xl space-y-6">
-              <div className="flex space-x-4 border-b border-slate-200 pb-2">
-                <button 
-                  onClick={() => setSettingsTab('general')}
-                  className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'general' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  General Settings
-                </button>
-                {currentUser.role === 'admin' && (
-                  <button 
-                    onClick={() => setSettingsTab('api_keys')}
-                    className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'api_keys' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
-                  >
-                    API Keys & Logins
-                  </button>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 border-b border-slate-200 pb-2">
+                {currentUser.role === 'admin' ? (
+                  <>
+                    <button
+                      onClick={() => setSettingsTab('ai')}
+                      className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'ai' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      AI & Scheduling
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('home_assistant')}
+                      className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'home_assistant' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Home Assistant
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('api_keys')}
+                      className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'api_keys' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      API Keys & Alerts
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('users')}
+                      className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'users' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Users
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('system')}
+                      className={`pb-2 text-sm font-medium transition-colors ${settingsTab === 'system' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      System & Updates
+                    </button>
+                  </>
+                ) : (
+                  <span className="pb-2 text-sm font-medium text-slate-900">Settings</span>
                 )}
               </div>
 
-              {settingsTab === 'general' && currentUser.role === 'admin' && (
+              {currentUser.role !== 'admin' && (
+                <div className="text-sm text-slate-500 text-center py-8 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                  Ask an administrator to configure AI, Home Assistant, and system settings.
+                </div>
+              )}
+
+              {settingsTab === 'ai' && currentUser.role === 'admin' && (
                 <>
                   <Card>
                     <CardHeader>
@@ -1655,10 +1683,10 @@ export default function App() {
                         <div className="space-y-2">
                           <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>
                           <div className="flex items-center gap-4">
-                            <Input 
-                              id="ai_realtime_interval" 
-                              type="number" 
-                              min="1" 
+                            <Input
+                              id="ai_realtime_interval"
+                              type="number"
+                              min="1"
                               max="60"
                               value={settings.ai_realtime_interval}
                               onChange={e => setSettings({...settings, ai_realtime_interval: e.target.value})}
@@ -1669,16 +1697,27 @@ export default function App() {
                         <div className="space-y-2">
                           <Label htmlFor="ai_lookback_days">Lookback Window (Days: 7-30)</Label>
                           <div className="flex items-center gap-4">
-                            <Input 
-                              id="ai_lookback_days" 
-                              type="number" 
-                              min="7" 
+                            <Input
+                              id="ai_lookback_days"
+                              type="number"
+                              min="7"
                               max="30"
                               value={settings.ai_lookback_days}
                               onChange={e => setSettings({...settings, ai_lookback_days: e.target.value})}
                             />
                             <span className="text-xs text-slate-500 whitespace-nowrap">{settings.ai_lookback_days} days of history</span>
                           </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="ai_context_window_hours">Real-Time Context Window (Hours: 1-24)</Label>
+                          <Input
+                            id="ai_context_window_hours"
+                            type="number"
+                            min="1"
+                            max="24"
+                            value={settings.ai_context_window_hours}
+                            onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
+                          />
                         </div>
                       </div>
                     </CardContent>
@@ -1713,64 +1752,47 @@ export default function App() {
                     </CardContent>
                   </Card>
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>AI Learning & Knowledge Base</CardTitle>
-                      <CardDescription>Pull in your existing Home Assistant logic to help the AI understand your preferences.</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start space-x-3">
-                        <BrainCircuit className="w-5 h-5 text-indigo-600 mt-0.5" />
-                        <div className="text-sm text-indigo-900">
-                          <p className="font-medium">Automation & Script Sync</p>
-                          <p className="opacity-80">The AI will analyze your existing automations to learn how you group actions (e.g., "Night Mode", "Away Mode") and what events you care about. It won't execute these, but will use them to better align its generated schedules with your intent.</p>
-                        </div>
-                      </div>
-                      <Button 
-                        onClick={handleSyncAutomationsScripts} 
-                        disabled={isSyncing}
-                        className="w-full bg-indigo-600 text-white hover:bg-indigo-700"
-                      >
-                        {isSyncing ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                        Sync Automations & Scripts for AI Learning
-                      </Button>
-                    </CardContent>
-                  </Card>
+                </>
+              )}
 
+              {settingsTab === 'home_assistant' && currentUser.role === 'admin' && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>AI Learning & Knowledge Base</CardTitle>
+                    <CardDescription>Pull in your existing Home Assistant logic to help the AI understand your preferences.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start space-x-3">
+                      <BrainCircuit className="w-5 h-5 text-indigo-600 mt-0.5" />
+                      <div className="text-sm text-indigo-900">
+                        <p className="font-medium">Automation & Script Sync</p>
+                        <p className="opacity-80">The AI will analyze your existing automations to learn how you group actions (e.g., "Night Mode", "Away Mode") and what events you care about. It won't execute these, but will use them to better align its generated schedules with your intent.</p>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleSyncAutomationsScripts}
+                      disabled={isSyncing}
+                      className="w-full bg-indigo-600 text-white hover:bg-indigo-700"
+                    >
+                      {isSyncing ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                      Sync Automations & Scripts for AI Learning
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {settingsTab === 'system' && currentUser.role === 'admin' && (
+                <>
                   <Card>
                     <CardHeader>
-                      <CardTitle>Data Management & Migration</CardTitle>
-                      <CardDescription>Configure data sync and upgrade to a local SQL service.</CardDescription>
+                      <CardTitle>Database & Update Source</CardTitle>
+                      <CardDescription>Configure the update source branch and upgrade to a local SQL service.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label htmlFor="ai_context_window_hours">Context Sync Window (Hours: 1-24)</Label>
-                          <Input 
-                            id="ai_context_window_hours" 
-                            type="number" 
-                            min="1" 
-                            max="24"
-                            value={settings.ai_context_window_hours}
-                            onChange={e => setSettings({...settings, ai_context_window_hours: e.target.value})}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="dashboard_default_timeframe">Graph Default Timeframe</Label>
-                          <select 
-                            id="dashboard_default_timeframe"
-                            className="w-full p-2 border border-slate-200 rounded-md text-sm"
-                            value={settings.dashboard_default_timeframe}
-                            onChange={e => setSettings({...settings, dashboard_default_timeframe: e.target.value})}
-                          >
-                            <option value="24h">Last 24 Hours</option>
-                            <option value="7d">Last 7 Days</option>
-                            <option value="30d">Last 30 Days</option>
-                          </select>
-                        </div>
-                        <div className="space-y-2">
                           <Label htmlFor="github_branch">GitHub Update Branch</Label>
-                          <Input 
+                          <Input
                             id="github_branch"
                             value={settings.github_branch || 'main'}
                             onChange={e => setSettings({...settings, github_branch: e.target.value})}
@@ -1827,7 +1849,11 @@ export default function App() {
                       )}
                     </CardContent>
                   </Card>
+                </>
+              )}
 
+              {settingsTab === 'ai' && currentUser.role === 'admin' && (
+                <>
                   <Card>
                     <CardHeader>
                       <CardTitle>AI Ghost Mode</CardTitle>
@@ -1868,33 +1894,51 @@ export default function App() {
                     </CardContent>
                   </Card>
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Dashboard Graph Zones</CardTitle>
-                      <CardDescription>Select which climate zones to display on the dashboard temperature graph.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
-                        {entities.filter(e => e.domain === 'climate').map(zone => (
-                          <label key={zone.entity_id} className="flex items-center space-x-3 p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50">
-                            <input 
-                              type="checkbox" 
-                              className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
-                              checked={safeJsonParse(settings.dashboard_graph_zones || '[]').includes(zone.entity_id)}
-                              onChange={() => handleToggleGraphZone(zone.entity_id)}
-                            />
-                            <span className="text-sm font-medium text-slate-700">{zone.friendly_name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-
                   <AiContextManager userAiContext={settings.user_ai_context} onUpdate={handleUpdateAiContext} />
+                </>
+              )}
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>User Management</CardTitle>
+              {settingsTab === 'home_assistant' && currentUser.role === 'admin' && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Dashboard Graph Zones</CardTitle>
+                    <CardDescription>Select which climate zones to display on the dashboard temperature graph, and the graph's default timeframe.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="dashboard_default_timeframe">Graph Default Timeframe</Label>
+                      <select
+                        id="dashboard_default_timeframe"
+                        className="w-full max-w-xs p-2 border border-slate-200 rounded-md text-sm"
+                        value={settings.dashboard_default_timeframe}
+                        onChange={e => setSettings({...settings, dashboard_default_timeframe: e.target.value})}
+                      >
+                        <option value="24h">Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                        <option value="30d">Last 30 Days</option>
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
+                      {entities.filter(e => e.domain === 'climate').map(zone => (
+                        <label key={zone.entity_id} className="flex items-center space-x-3 p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
+                            checked={safeJsonParse(settings.dashboard_graph_zones || '[]').includes(zone.entity_id)}
+                            onChange={() => handleToggleGraphZone(zone.entity_id)}
+                          />
+                          <span className="text-sm font-medium text-slate-700">{zone.friendly_name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {settingsTab === 'users' && currentUser.role === 'admin' && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>User Management</CardTitle>
                       <CardDescription>Manage access to HomeBrain AI.</CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -1954,7 +1998,10 @@ export default function App() {
                       </div>
                     </CardContent>
                   </Card>
+              )}
 
+              {settingsTab === 'system' && currentUser.role === 'admin' && (
+                <>
                   <Card>
                     <CardHeader>
                       <CardTitle>System Updates & Maintenance</CardTitle>
@@ -2050,7 +2097,11 @@ export default function App() {
                       </div>
                     </CardContent>
                   </Card>
+                </>
+              )}
 
+              {settingsTab === 'home_assistant' && currentUser.role === 'admin' && (
+                <>
                   <Card>
                     <CardHeader>
                       <CardTitle>Historical Data Sync</CardTitle>
@@ -2167,64 +2218,70 @@ export default function App() {
                       </form>
                     </CardContent>
                   </Card>
+                </>
+              )}
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Home Assistant Connection</CardTitle>
-                      <CardDescription>Configure your connection to Home Assistant.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="ha_url">Home Assistant URL</Label>
-                            <Input 
-                              id="ha_url" 
-                              placeholder="http://homeassistant.local:8123" 
-                              value={settings.ha_url || ''}
-                              onChange={e => setSettings({...settings, ha_url: e.target.value})}
-                            />
-                            {settings.ha_url?.includes('.local') && (
-                              <p className="text-[10px] text-amber-600 mt-1">
-                                Warning: .local addresses are not reachable from the cloud. Use a public URL or Nabu Casa.
-                              </p>
-                            )}
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="ha_token">Long-Lived Access Token</Label>
-                            <Input 
-                              id="ha_token" 
-                              type="password" 
-                              autoComplete="new-password"
-                              value={settings.ha_token || ''}
-                              onChange={e => setSettings({...settings, ha_token: e.target.value})}
-                            />
-                          </div>
+              {settingsTab === 'home_assistant' && currentUser.role === 'admin' && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Home Assistant Connection</CardTitle>
+                    <CardDescription>Configure your connection to Home Assistant.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleSaveSettings} className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="ha_url">Home Assistant URL</Label>
+                          <Input
+                            id="ha_url"
+                            placeholder="http://homeassistant.local:8123"
+                            value={settings.ha_url || ''}
+                            onChange={e => setSettings({...settings, ha_url: e.target.value})}
+                          />
+                          {settings.ha_url?.includes('.local') && (
+                            <p className="text-[10px] text-amber-600 mt-1">
+                              Warning: .local addresses are not reachable from the cloud. Use a public URL or Nabu Casa.
+                            </p>
+                          )}
                         </div>
-                        <div className="flex items-center gap-4 pt-2">
-                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
-                          <Button 
-                            type="button" 
-                            variant="outline" 
-                            onClick={handleTestConnection}
-                            disabled={isTestingConnection}
-                          >
-                            {isTestingConnection ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                            Test Connection
-                          </Button>
-                          <Button 
-                            type="button" 
-                            variant="outline" 
-                            onClick={handleForceConnect}
-                            disabled={haStatus.status === 'connecting'}
-                          >
-                            {haStatus.status === 'connecting' ? 'Connecting...' : 'Force Reconnect'}
-                          </Button>
+                        <div className="space-y-2">
+                          <Label htmlFor="ha_token">Long-Lived Access Token</Label>
+                          <Input
+                            id="ha_token"
+                            type="password"
+                            autoComplete="new-password"
+                            value={settings.ha_token || ''}
+                            onChange={e => setSettings({...settings, ha_token: e.target.value})}
+                          />
                         </div>
-                      </form>
-                    </CardContent>
-                  </Card>
+                      </div>
+                      <div className="flex items-center gap-4 pt-2">
+                        <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Connection</Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleTestConnection}
+                          disabled={isTestingConnection}
+                        >
+                          {isTestingConnection ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                          Test Connection
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleForceConnect}
+                          disabled={haStatus.status === 'connecting'}
+                        >
+                          {haStatus.status === 'connecting' ? 'Connecting...' : 'Force Reconnect'}
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+              )}
 
+              {settingsTab === 'api_keys' && currentUser.role === 'admin' && (
+                <>
                   <Card>
                     <CardHeader>
                       <CardTitle>Telegram Notifications</CardTitle>
@@ -2264,6 +2321,7 @@ export default function App() {
                 </>
               )}
 
+              {settingsTab === 'home_assistant' && currentUser.role === 'admin' && (
               <Card>
                 <CardHeader>
                   <div className="flex justify-between items-center">
@@ -2407,7 +2465,7 @@ export default function App() {
                         </div>
                         {trackedEntities[entity.entity_id]?.tracked && (
                           <Input 
-                            placeholder="Add a role or note (e.g., 'Zone 1', 'Anthony\\'s Phone')" 
+                            placeholder="Add a role or note (e.g., 'Zone 1', 'Chris's Phone')"
                             className="h-8 text-xs"
                             value={trackedEntities[entity.entity_id]?.notes || ''}
                             onChange={(e) => handleUpdateNotes(entity.entity_id, e.target.value)}
@@ -2422,34 +2480,35 @@ export default function App() {
                   </div>
                 </CardContent>
               </Card>
+              )}
 
+              {settingsTab === 'system' && currentUser.role === 'admin' && (
               <Card>
                 <CardHeader>
                   <CardTitle>Installation Guide</CardTitle>
-                  <CardDescription>How to install this on an Ubuntu Server.</CardDescription>
+                  <CardDescription>How to install this on a fresh Linux server (matches install-service.sh).</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="bg-[#0a0a0a] text-slate-300 p-4 rounded-lg text-sm font-mono overflow-x-auto border border-white/10">
-                    <p># 1. Install Node.js and PM2</p>
+                    <p># 1. Install Node.js and Nginx</p>
                     <p>curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -</p>
-                    <p>sudo apt-get install -y nodejs</p>
-                    <p>sudo npm install -g pm2</p>
+                    <p>sudo apt-get install -y nodejs nginx</p>
                     <br/>
-                    <p># 2. Clone repository and install dependencies</p>
+                    <p># 2. Clone the repository</p>
                     <p>git clone https://github.com/cstone1983/AI-Climate-Brain.git homebrain</p>
                     <p>cd homebrain</p>
-                    <p>npm install</p>
                     <br/>
-                    <p># 3. Build the application</p>
-                    <p>npm run build</p>
+                    <p># 3. Run the installer (installs deps, builds, sets up systemd + Nginx)</p>
+                    <p>chmod +x install-service.sh</p>
+                    <p>sudo ./install-service.sh</p>
                     <br/>
-                    <p># 4. Start with PM2</p>
-                    <p>pm2 start npm --name "homebrain" -- run start</p>
-                    <p>pm2 save</p>
-                    <p>pm2 startup</p>
+                    <p># 4. Check the service / view logs</p>
+                    <p>sudo systemctl status ai-smarthome</p>
+                    <p>sudo journalctl -u ai-smarthome -f</p>
                   </div>
                 </CardContent>
               </Card>
+              )}
             </div>
           )}
         </div>

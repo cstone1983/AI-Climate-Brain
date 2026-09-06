@@ -193,17 +193,6 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
-app.use(session({
-  secret: process.env.SESSION_SECRET || "home-brain-secret-key",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-  }
-}));
-
 // Initialize SQLite Database
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "home_brain.db");
@@ -222,6 +211,69 @@ if (fs.existsSync(OLD_DB_PATH) && !fs.existsSync(DB_PATH)) {
 }
 
 const db = new Database(DB_PATH);
+
+// Persist sessions in SQLite so logins survive server restarts (the default
+// express-session MemoryStore drops every session on process exit).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    sid TEXT PRIMARY KEY,
+    sess TEXT NOT NULL,
+    expires INTEGER
+  );
+`);
+db.prepare("DELETE FROM sessions WHERE expires IS NOT NULL AND expires < ?").run(Date.now());
+
+class SqliteSessionStore extends session.Store {
+  get(sid: string, callback: (err: any, session?: any) => void) {
+    try {
+      const row = db.prepare("SELECT sess, expires FROM sessions WHERE sid = ?").get(sid) as any;
+      if (!row) return callback(null, null);
+      if (row.expires && row.expires < Date.now()) {
+        db.prepare("DELETE FROM sessions WHERE sid = ?").run(sid);
+        return callback(null, null);
+      }
+      callback(null, JSON.parse(row.sess));
+    } catch (e) {
+      callback(e);
+    }
+  }
+
+  set(sid: string, sessionData: any, callback?: (err?: any) => void) {
+    try {
+      const expires = sessionData.cookie?.expires ? new Date(sessionData.cookie.expires).getTime() : null;
+      db.prepare("INSERT INTO sessions (sid, sess, expires) VALUES (?, ?, ?) ON CONFLICT(sid) DO UPDATE SET sess = ?, expires = ?")
+        .run(sid, JSON.stringify(sessionData), expires, JSON.stringify(sessionData), expires);
+      callback?.();
+    } catch (e) {
+      callback?.(e);
+    }
+  }
+
+  destroy(sid: string, callback?: (err?: any) => void) {
+    try {
+      db.prepare("DELETE FROM sessions WHERE sid = ?").run(sid);
+      callback?.();
+    } catch (e) {
+      callback?.(e);
+    }
+  }
+
+  touch(sid: string, sessionData: any, callback?: (err?: any) => void) {
+    this.set(sid, sessionData, callback);
+  }
+}
+
+app.use(session({
+  store: new SqliteSessionStore(),
+  secret: process.env.SESSION_SECRET || "home-brain-secret-key",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  }
+}));
 
 const CURRENT_DB_VERSION = 3; // Increment this when adding new migrations
 
