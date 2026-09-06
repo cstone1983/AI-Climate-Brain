@@ -780,12 +780,15 @@ function connectToHA() {
         const newRecord = db.prepare("SELECT * FROM device_history WHERE id = ?").get(info.lastInsertRowid);
         
         // Real-time Self-Correction Logic
-        // If a person or tracker arrives home, check if we need to self-correct the HVAC
-        if ((entity_id.startsWith('person.') || entity_id.startsWith('device_tracker.')) && state === 'home') {
+        // Only fire when someone actually just arrived home (a genuine
+        // not-home -> home transition), not on every attribute-only update
+        // (GPS/battery/etc.) HA sends while an entity stays "home".
+        const oldState = msg.event.data.old_state?.state;
+        if ((entity_id.startsWith('person.') || entity_id.startsWith('device_tracker.')) && state === 'home' && oldState !== 'home') {
            const insertReasoning = db.prepare("INSERT INTO ai_reasoning (context, decision, reasoning, created_at) VALUES (?, ?, ?, datetime('now'))");
            insertReasoning.run(
-             "Real-time Presence Event", 
-             "Self-Correction Triggered", 
+             "Real-time Presence Event",
+             "Self-Correction Triggered",
              `Detected ${entity_id} arriving home unexpectedly or triggering a state change. Overriding schedule to ensure comfort in active zones.`
            );
            broadcastToFrontend({ type: 'NEW_REASONING' });
