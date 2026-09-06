@@ -776,8 +776,8 @@ function connectToHA() {
            broadcastToFrontend({ type: 'NEW_REASONING' });
         }
 
-        // Broadcast to frontend
-        broadcastToFrontend({ type: 'NEW_HISTORY', data: newRecord });
+        // Broadcast to frontend (guard in case the row lookup somehow misses)
+        if (newRecord) broadcastToFrontend({ type: 'NEW_HISTORY', data: newRecord });
       }
     });
 
