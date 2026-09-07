@@ -2651,15 +2651,18 @@ app.post("/api/migrate-to-postgres", async (req, res) => {
 });
 
 app.get("/api/schedules", async (req, res) => {
+  // Capped like /api/insights and /api/reasoning - with daily generation
+  // this grows slowly, but nothing should ever query the full unbounded
+  // history (each row's schedule_data can be several KB on its own).
   if (pgPool && pgReady) {
     try {
-      const result = await pgPool.query("SELECT * FROM schedules ORDER BY created_at DESC");
+      const result = await pgPool.query("SELECT * FROM schedules ORDER BY created_at DESC LIMIT 50");
       return res.json(result.rows);
     } catch (e) {
       console.error("PostgreSQL schedules fetch failed:", e);
     }
   }
-  const schedules = db.prepare("SELECT * FROM schedules ORDER BY created_at DESC").all();
+  const schedules = db.prepare("SELECT * FROM schedules ORDER BY created_at DESC LIMIT 50").all();
   res.json(schedules);
 });
 
