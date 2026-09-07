@@ -983,6 +983,12 @@ async function runDailyAnalysis() {
     const aiModel = getSetting("ai_model", "claude-sonnet-5");
     const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
     const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
+    const climateAbsMin = getSetting("climate_abs_min", "55");
+    const climateAbsMax = getSetting("climate_abs_max", "80");
+    const climateMasterHome = getSetting("climate_master_home", "72");
+    const climateMasterAway = getSetting("climate_master_away", "65");
+    const climateMasterNight = getSetting("climate_master_night", "68");
+    const climateZoneModifiers = safeParse(getSetting("climate_zone_modifiers", "{}"), {});
 
     if (!apiKey || apiKey === "undefined" || apiKey === "null") {
       console.warn("Claude API Key is not configured in settings. Skipping daily analysis.");
@@ -1083,6 +1089,16 @@ async function runDailyAnalysis() {
 
     const now = new Date();
     const currentTimeStr = now.toLocaleString('en-US', { timeZoneName: 'short' });
+    const currentDayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+
+    // Live weather/climate readings, fetched fresh right now - the
+    // ha_system_snapshots row used for SYSTEM SNAPSHOT below is only
+    // refreshed when the user manually syncs, so it can be stale; current
+    // conditions (temperature, forecast, humidity) matter for
+    // pre-conditioning decisions and shouldn't depend on that.
+    const currentConditions = states.filter((s: any) =>
+      s.entity_id.startsWith('weather.') || s.entity_id.startsWith('climate.')
+    );
 
     const filteredHistory = filterTransitions(history);
 
@@ -1099,6 +1115,14 @@ async function runDailyAnalysis() {
          - A "Home -> Not Home -> Home" sequence under 90 minutes is an "Errand."
          - A "Not Home" state lasting >10 hours is "Overtime/Project Site."
       4. ENVIRONMENTAL CORRELATION: Cross-reference any solar/heat-pump production data named in USER PROVIDED CONTEXT with resident presence. Does activity increase when solar production is high?
+
+      ### CLIMATE TARGET PREFERENCES (set by the user - use these as your baseline, do not invent your own targets):
+      - Home Mode master target: ${climateMasterHome}°F
+      - Away Mode master target: ${climateMasterAway}°F
+      - Night Mode master target: ${climateMasterNight}°F
+      - Per-zone offsets (add to the master target for that zone's mode; zero if a zone isn't listed): ${JSON.stringify(climateZoneModifiers)}
+      - Absolute safety bounds - NEVER schedule a temperature outside this range regardless of any other reasoning: ${climateAbsMin}°F to ${climateAbsMax}°F
+      For every climate/HVAC schedule entry, compute the target as (master temp for that entry's mode) + (that zone's offset), then adjust only modestly from that baseline if strong historical evidence supports it (e.g. pre-conditioning lead time) - explain any such deviation in the entry's reasoning.
 
       ### ANALYSIS GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
@@ -1117,8 +1141,11 @@ async function runDailyAnalysis() {
       
       USER PROVIDED CONTEXT:
       ${userContext}
-      
-      SYSTEM SNAPSHOT (Full Entity List & Config): ${JSON.stringify(systemSnapshot)}
+
+      CURRENT DATE/TIME: ${currentTimeStr} (${currentDayOfWeek}) - use this to anchor which day the schedule starts from and how recent the history below actually is.
+      CURRENT CONDITIONS (live weather/climate, fetched just now): ${JSON.stringify(currentConditions)}
+
+      SYSTEM SNAPSHOT (Full Entity List & Config, may be from an earlier manual sync): ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       Tracked Devices (including People): ${JSON.stringify(allTracked)}
       Recent History (State Transitions Only): ${JSON.stringify(filteredHistory.slice(-1000))}
@@ -1370,6 +1397,13 @@ async function executeRealTimeAIControl() {
          - A "Not Home" state lasting >10 hours is "Overtime/Project Site."
       4. ENVIRONMENTAL CORRELATION: Cross-reference any solar/heat-pump production data named in USER PROVIDED CONTEXT with resident presence. Does activity increase when solar production is high?
 
+      ### CLIMATE TARGET PREFERENCES (set by the user - use these as your baseline, do not invent your own targets):
+      - Home Mode master target: ${settings.climate_master_home || 72}°F
+      - Away Mode master target: ${settings.climate_master_away || 65}°F
+      - Night Mode master target: ${settings.climate_master_night || 68}°F
+      - Per-zone offsets (add to the master target for that zone's mode; zero if a zone isn't listed): ${settings.climate_zone_modifiers || '{}'}
+      - Absolute safety bounds - NEVER request a temperature outside this range: ${settings.climate_abs_min || 55}°F to ${settings.climate_abs_max || 80}°F
+
       ### REAL-TIME INSTRUCTIONS:
       1. Analyze the current state and recent history to determine the home state and if actions are needed.
       2. NO ASSUMPTION POLICY: Base your inferred_home_state strictly on the provided Tracked States and history. Do not assume someone is asleep just because of the time of day; verify lack of motion (binary_sensor) or media player activity.
@@ -1386,6 +1420,7 @@ async function executeRealTimeAIControl() {
       USER PROVIDED CONTEXT:
       ${userContext}
 
+      CURRENT DATE/TIME: ${new Date().toLocaleString('en-US', { timeZoneName: 'short' })} (${new Date().toLocaleDateString('en-US', { weekday: 'long' })})
       SYSTEM SNAPSHOT: ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       OCCUPANCY STATUS (People): ${JSON.stringify(occupancyRoster)}
