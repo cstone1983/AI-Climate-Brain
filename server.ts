@@ -168,6 +168,89 @@ function filterTransitions(history: any[]) {
   return transitions;
 }
 
+// Custody calendar support: the user's shared Google Calendar exports as a
+// public/secret ICS feed where every day is covered by a contiguous "Busy"
+// block in a 2-2-3 rotation (classic pattern: each block flips to the other
+// parent, regardless of whether it's a 2-day or 3-day block - A,B,A,B,A,B...
+// in sequence). The feed itself never says WHICH parent owns a given block,
+// so a known anchor date + its owner is used to derive parity for any other
+// date by counting blocks between them.
+// KNOWN LIMITATION (tracked for later, see README roadmap): one-off swaps
+// that get added as a separate overlapping calendar event are NOT detected -
+// Google's ICS export strips the event description field entirely (public
+// and "secret" feeds alike), which is where swap notes actually live. Seeing
+// those reliably would require the full Google Calendar API with OAuth
+// instead of a plain feed URL. Until then this only reflects the *default*
+// rotation, which is an accepted tradeoff since ghost mode means it only
+// affects AI suggestions, not real hardware control.
+let custodyCache: { fetchedAt: number; blocks: { start: Date; end: Date }[] } | null = null;
+
+function parseIcsDate(raw: string): Date | null {
+  const m = raw.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?$/);
+  if (!m) return null;
+  const [, y, mo, d, h = "0", mi = "0", s = "0"] = m;
+  return new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)));
+}
+
+async function fetchCustodyBlocks(icsUrl: string): Promise<{ start: Date; end: Date }[]> {
+  const now = Date.now();
+  if (custodyCache && now - custodyCache.fetchedAt < 6 * 60 * 60 * 1000) {
+    return custodyCache.blocks;
+  }
+  const res = await fetch(icsUrl);
+  if (!res.ok) throw new Error(`Failed to fetch custody calendar: ${res.status}`);
+  const text = await res.text();
+  const unfolded = text.replace(/\r?\n[ \t]/g, "");
+  const blocks: { start: Date; end: Date }[] = [];
+  for (const chunk of unfolded.split("BEGIN:VEVENT").slice(1)) {
+    const body = chunk.split("END:VEVENT")[0];
+    const startMatch = body.match(/DTSTART[^:]*:([^\r\n]+)/);
+    const endMatch = body.match(/DTEND[^:]*:([^\r\n]+)/);
+    if (!startMatch || !endMatch) continue;
+    const start = parseIcsDate(startMatch[1]);
+    const end = parseIcsDate(endMatch[1]);
+    // Ignore anything shorter than a day: the calendar sometimes has short,
+    // unrelated "Busy" entries (personal appointments) sitting nested inside
+    // a real multi-day custody block. Sorted by start time alone, those would
+    // otherwise slot in as a phantom extra block and throw off parity for
+    // every date afterward - confirmed against real data before this filter
+    // was added (the true blocks are always 2+ days).
+    if (start && end && end.getTime() - start.getTime() >= 20 * 60 * 60 * 1000) {
+      blocks.push({ start, end });
+    }
+  }
+  blocks.sort((a, b) => a.start.getTime() - b.start.getTime());
+  custodyCache = { fetchedAt: now, blocks };
+  return blocks;
+}
+
+// Returns whether the kids are with the app's user (as opposed to the other
+// parent) on the given date, per the default rotation - or null if the
+// custody calendar isn't configured or the date falls outside the feed.
+async function isKidsHomeOn(date: Date): Promise<boolean | null> {
+  const icsUrl = getSetting("custody_calendar_ics_url", "");
+  const anchorDateStr = getSetting("custody_anchor_date", "");
+  const anchorOwner = getSetting("custody_anchor_owner", "user");
+  if (!icsUrl || !anchorDateStr) return null;
+
+  try {
+    const blocks = await fetchCustodyBlocks(icsUrl);
+    if (blocks.length === 0) return null;
+
+    const anchorDate = new Date(anchorDateStr + "T12:00:00Z");
+    const anchorIndex = blocks.findIndex(b => anchorDate >= b.start && anchorDate < b.end);
+    const targetIndex = blocks.findIndex(b => date >= b.start && date < b.end);
+    if (anchorIndex === -1 || targetIndex === -1) return null;
+
+    const sameParityAsAnchor = (targetIndex - anchorIndex) % 2 === 0;
+    const targetOwner = sameParityAsAnchor ? anchorOwner : (anchorOwner === "user" ? "other" : "user");
+    return targetOwner === "user";
+  } catch (e) {
+    console.error("Failed to resolve custody schedule:", e);
+    return null;
+  }
+}
+
 // Initialize PostgreSQL Pool
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
@@ -553,6 +636,11 @@ function initializeDatabase() {
   insertSetting.run("local_ai_base_url", "");
   insertSetting.run("local_ai_api_key", "");
   insertSetting.run("local_ai_model", "hermes3:latest");
+  insertSetting.run("custody_calendar_ics_url", "");
+  insertSetting.run("custody_anchor_date", "");
+  insertSetting.run("custody_anchor_owner", "user");
+  insertSetting.run("custody_kids_zones", "");
+  insertSetting.run("custody_away_setback", "4");
   insertSetting.run("climate_abs_min", "55");
   insertSetting.run("climate_abs_max", "80");
   insertSetting.run("dashboard_default_timeframe", "24h");
@@ -1060,6 +1148,18 @@ async function runDailyAnalysis() {
     const climateMasterAway = getSetting("climate_master_away", "65");
     const climateMasterNight = getSetting("climate_master_night", "68");
     const climateZoneModifiers = safeParse(getSetting("climate_zone_modifiers", "{}"), {});
+    const custodyKidsZones = getSetting("custody_kids_zones", "").split(",").map(z => z.trim()).filter(Boolean);
+    const custodyAwaySetback = Number(getSetting("custody_away_setback", "4"));
+
+    let custodySchedule: { date: string; kidsHome: boolean | null }[] = [];
+    if (getSetting("custody_calendar_ics_url", "")) {
+      for (let i = 0; i < 14; i++) {
+        const d = new Date();
+        d.setUTCDate(d.getUTCDate() + i);
+        const kidsHome = await isKidsHomeOn(d);
+        custodySchedule.push({ date: d.toISOString().slice(0, 10), kidsHome });
+      }
+    }
 
     const ai = resolveAiProvider("ai_model", "claude-sonnet-5");
     if (!ai.ready) {
@@ -1197,10 +1297,16 @@ async function runDailyAnalysis() {
       - Per-zone offsets (add to the master target for that zone's mode; zero if a zone isn't listed): ${JSON.stringify(climateZoneModifiers)}
       - Absolute safety bounds - NEVER schedule a temperature outside this range regardless of any other reasoning: ${climateAbsMin}°F to ${climateAbsMax}°F
 For every climate/HVAC schedule entry, populate target_temperature as (master temp for that entry's mode) + (that zone's offset), then adjust only modestly from that baseline if strong historical evidence supports it (e.g. pre-conditioning lead time) - explain any such deviation in the entry's reasoning. Use "state" for the HVAC mode (heat_cool/cool/eco/etc.), not for the temperature.
-
+${custodySchedule.length > 0 ? `
+      ### HOUSEHOLD CUSTODY SCHEDULE (from the family calendar - this is KNOWN, ground-truth data, do NOT try to re-derive it from presence history):
+      Kids' zones: ${JSON.stringify(custodyKidsZones)}
+      For each date below where kidsHome is false, set those zones to (their normal target_temperature) ${custodyAwaySetback}°F further from comfortable (warmer in cooling season, cooler in heating season) to save energy while they're away - still respecting the absolute safety bounds above. A null value means the custody schedule couldn't be resolved for that date; treat it as unknown and use normal targets.
+      ${JSON.stringify(custodySchedule)}
+      KNOWN LIMITATION: this reflects the default rotation only - one-off swaps entered as a separate calendar event are not yet visible to this system, so it may occasionally be wrong on an exception day.
+` : ''}
       ### ANALYSIS GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
-      2. Infer custody schedules (alternating weeks/days) and long-term seasonal or monthly patterns based on presence patterns in the ${lookbackDays}-day history.
+      2. For custody: use the HOUSEHOLD CUSTODY SCHEDULE above if provided (it's ground truth) rather than inferring it from presence data. Otherwise, infer long-term seasonal or monthly patterns based on presence patterns in the ${lookbackDays}-day history.
       3. Infer school/work arrival/departure times and pre-heat/pre-cool appropriate zones, accounting for weekly variations.
       4. Identify "Ghost" patterns (recurring times when the house is empty but HVAC is active).
       5. Provide detailed reasoning for every schedule block.

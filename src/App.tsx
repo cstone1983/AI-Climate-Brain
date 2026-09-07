@@ -94,6 +94,11 @@ export default function App() {
     local_ai_base_url: '',
     local_ai_api_key: '',
     local_ai_model: 'hermes3:latest',
+    custody_calendar_ics_url: '',
+    custody_anchor_date: '',
+    custody_anchor_owner: 'user',
+    custody_kids_zones: '',
+    custody_away_setback: '4',
     climate_abs_min: '55',
     climate_abs_max: '80',
     dashboard_default_timeframe: '24h',
@@ -1860,6 +1865,77 @@ export default function App() {
                         </div>
                         <div className="pt-2">
                           <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save AI Engine Settings</Button>
+                        </div>
+                      </form>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Custody / Occupancy Schedule</CardTitle>
+                      <CardDescription>Feeds a known custody rotation into the daily analysis so kids' zones get set back automatically when they're away, instead of relying on the AI to guess from presence data.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={createSaveHandler(['custody_calendar_ics_url', 'custody_anchor_date', 'custody_anchor_owner', 'custody_kids_zones', 'custody_away_setback'])} className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="custody_calendar_ics_url">Custody Calendar iCal URL</Label>
+                          <Input
+                            id="custody_calendar_ics_url"
+                            placeholder="https://calendar.google.com/calendar/ical/.../basic.ics"
+                            value={settings.custody_calendar_ics_url}
+                            onChange={e => setSettings({...settings, custody_calendar_ics_url: e.target.value})}
+                          />
+                          <p className="text-[10px] text-slate-400">The calendar's "Secret address in iCal format" (or public basic.ics link) - a continuous series of same-titled blocks in a 2-2-3 rotation, e.g. all titled "Busy".</p>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="custody_anchor_date">Anchor Date</Label>
+                            <Input
+                              id="custody_anchor_date"
+                              type="date"
+                              value={settings.custody_anchor_date}
+                              onChange={e => setSettings({...settings, custody_anchor_date: e.target.value})}
+                            />
+                            <p className="text-[10px] text-slate-400">Any date you're sure about who has the kids - used to figure out the rest of the rotation.</p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="custody_anchor_owner">On That Date, Kids Are:</Label>
+                            <select
+                              id="custody_anchor_owner"
+                              className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                              value={settings.custody_anchor_owner}
+                              onChange={e => setSettings({...settings, custody_anchor_owner: e.target.value})}
+                            >
+                              <option value="user">With Me</option>
+                              <option value="other">With The Other Parent</option>
+                            </select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="custody_away_setback">Away Setback (°F)</Label>
+                            <Input
+                              id="custody_away_setback"
+                              type="number"
+                              min="0"
+                              max="15"
+                              value={settings.custody_away_setback}
+                              onChange={e => setSettings({...settings, custody_away_setback: e.target.value})}
+                            />
+                            <p className="text-[10px] text-slate-400">How much further from comfortable to set kids' zones while they're away.</p>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="custody_kids_zones">Kids' Climate Zones</Label>
+                          <Input
+                            id="custody_kids_zones"
+                            placeholder="climate.kids_room, climate.upstairs_bunk"
+                            value={settings.custody_kids_zones}
+                            onChange={e => setSettings({...settings, custody_kids_zones: e.target.value})}
+                          />
+                          <p className="text-[10px] text-slate-400">Comma-separated entity IDs to set back when kids are away.</p>
+                        </div>
+                        <p className="text-[10px] text-amber-600 bg-amber-50 border border-amber-100 rounded-md p-2">Known limitation: this reflects the default rotation only - one-off swaps added as a separate calendar event aren't detected yet (Google's calendar export strips event descriptions/notes entirely). Catching those reliably would need full Google OAuth instead of a plain feed URL - a possible future upgrade once the base rotation is confirmed working well.</p>
+                        <div className="pt-2">
+                          <Button type="submit" className="bg-slate-900 text-white hover:bg-slate-800">Save Custody Schedule</Button>
                         </div>
                       </form>
                     </CardContent>
