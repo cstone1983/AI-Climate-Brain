@@ -165,7 +165,7 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
                     <div className="space-y-1 opacity-80">
                       <p><span className="text-slate-400">Entity:</span> {event.entity_id || 'N/A'}</p>
                       <p><span className="text-slate-400">Target State:</span> {event.state || 'N/A'}</p>
-                      {event.target_temperature !== undefined && event.target_temperature !== null && (
+                      {event.entity_id?.startsWith('climate.') && event.target_temperature !== undefined && event.target_temperature !== null && event.target_temperature !== 0 && (
                         <p><span className="text-slate-400">Target Temp:</span> {event.target_temperature}°F</p>
                       )}
                     </div>
