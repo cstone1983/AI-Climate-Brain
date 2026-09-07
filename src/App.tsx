@@ -204,7 +204,7 @@ export default function App() {
           const isRunningView = !filters.entity_id && !filters.state && !filters.start_date && !filters.end_date && filters.offset === 0;
           
           if (isRunningView) {
-            setHistory(prev => [message.data, ...prev].slice(0, 100));
+            setHistory(prev => prev.some(h => h.id === message.data.id) ? prev : [message.data, ...prev].slice(0, 100));
             setHistoryTotal(prev => prev + 1);
           }
           
