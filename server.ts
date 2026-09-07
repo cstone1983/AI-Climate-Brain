@@ -2629,12 +2629,18 @@ app.post("/api/ai/save-analysis", async (req, res) => {
 });
 
 app.post("/api/ai/generate-schedule", async (req, res) => {
-  try {
-    const result = await runDailyAnalysis();
-    res.json({ success: true, result });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
+  // Opus/Sonnet over the full prompt can take longer than the Cloudflare
+  // tunnel's edge timeout allows for one HTTP round trip - confirmed live
+  // (a 524 after ~100s even with nginx's own proxy_read_timeout raised well
+  // past that; Cloudflare's edge timeout is fixed and isn't configurable via
+  // nginx). Run it in the background instead and let the existing
+  // NEW_REASONING websocket broadcast (already fired at the end of
+  // runDailyAnalysis on success) tell the frontend when it's ready - errors
+  // are already sent as a Telegram alert from within runDailyAnalysis.
+  runDailyAnalysis().catch(e => {
+    console.error("Background schedule generation failed:", e.message);
+  });
+  res.json({ success: true, started: true });
 });
 
 app.post("/api/ai/real-time-control", async (req, res) => {

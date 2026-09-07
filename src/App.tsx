@@ -719,19 +719,20 @@ export default function App() {
   const handleGenerateSchedule = async () => {
     setIsGenerating(true);
     try {
+      // This can take well over a minute (Opus reasoning over the full
+      // prompt), longer than the Cloudflare tunnel allows for a single HTTP
+      // response - the backend starts it in the background and pushes the
+      // result over the websocket (NEW_REASONING) when it's actually ready,
+      // so this request only confirms it started, not that it's done.
       const res = await fetch('/api/ai/generate-schedule', { method: 'POST' });
       if (!res.ok) {
         const errorData = await res.json();
-        throw new Error(errorData.error || "Failed to generate schedule via AI");
+        throw new Error(errorData.error || "Failed to start AI schedule generation");
       }
-      
-      fetchInsights();
-      fetchReasoning();
-      fetchSchedules();
-      alert("Analysis and schedule generation completed successfully!");
+      alert("Analysis started - this can take a minute or two. The schedule and insights will update automatically here when it's done.");
     } catch (e: any) {
-      console.error("Analysis failed", e);
-      alert("Analysis failed: " + e.message);
+      console.error("Analysis failed to start", e);
+      alert("Analysis failed to start: " + e.message);
     } finally {
       setIsGenerating(false);
     }
