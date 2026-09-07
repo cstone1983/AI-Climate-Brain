@@ -11,6 +11,7 @@ interface ScheduleEvent {
   label?: string; // Optional label like "Morning Wakeup"
   entity_id?: string;
   state?: string;
+  target_temperature?: number;
   evidence?: string;
 }
 
@@ -164,6 +165,9 @@ export function RoutineTimeline({ data = [] }: RoutineTimelineProps) {
                     <div className="space-y-1 opacity-80">
                       <p><span className="text-slate-400">Entity:</span> {event.entity_id || 'N/A'}</p>
                       <p><span className="text-slate-400">Target State:</span> {event.state || 'N/A'}</p>
+                      {event.target_temperature !== undefined && (
+                        <p><span className="text-slate-400">Target Temp:</span> {event.target_temperature}°F</p>
+                      )}
                     </div>
                   </div>
                 </div>

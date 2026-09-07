@@ -1122,7 +1122,7 @@ async function runDailyAnalysis() {
       - Night Mode master target: ${climateMasterNight}°F
       - Per-zone offsets (add to the master target for that zone's mode; zero if a zone isn't listed): ${JSON.stringify(climateZoneModifiers)}
       - Absolute safety bounds - NEVER schedule a temperature outside this range regardless of any other reasoning: ${climateAbsMin}°F to ${climateAbsMax}°F
-      For every climate/HVAC schedule entry, compute the target as (master temp for that entry's mode) + (that zone's offset), then adjust only modestly from that baseline if strong historical evidence supports it (e.g. pre-conditioning lead time) - explain any such deviation in the entry's reasoning.
+For every climate/HVAC schedule entry, populate target_temperature as (master temp for that entry's mode) + (that zone's offset), then adjust only modestly from that baseline if strong historical evidence supports it (e.g. pre-conditioning lead time) - explain any such deviation in the entry's reasoning. Use "state" for the HVAC mode (heat_cool/cool/eco/etc.), not for the temperature.
 
       ### ANALYSIS GOALS:
       1. Generate a rolling ${lookbackDays}-day schedule.
@@ -1193,7 +1193,8 @@ async function runDailyAnalysis() {
                   time: { type: "string", description: "Time in 24h format (e.g., 07:30)" },
                   action: { type: "string", description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
                   entity_id: { type: "string" },
-                  state: { type: "string" },
+                  state: { type: "string", description: "HVAC mode (e.g. heat_cool, cool, eco) for climate entities, or on/off for switches/lights - NOT a temperature." },
+                  target_temperature: { type: "number", description: "Required for climate/HVAC entries: the specific target temperature in °F, computed from the CLIMATE TARGET PREFERENCES (master temp for the entry's mode + that zone's offset). Omit for non-climate entries." },
                   reasoning: { type: "string", description: "Specific reasoning for this individual event" },
                   evidence: { type: "string", description: "The specific data point (e.g. motion sensor trigger time) that led to this schedule entry" }
                 },
