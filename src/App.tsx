@@ -246,7 +246,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/history/graph?zones=${encodeURIComponent(zonesStr)}&timeframe=${timeframe}`);
       const data = await res.json();
-      setGraphData(data);
+      setGraphData(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Failed to fetch graph data", e);
     }
@@ -267,13 +267,13 @@ export default function App() {
   const fetchUsers = async () => {
     const res = await fetch('/api/users');
     const data = await res.json();
-    setUsersList(data);
+    setUsersList(Array.isArray(data) ? data : []);
   };
 
   const fetchOccupancy = async () => {
     const res = await fetch('/api/occupancy');
     const data = await res.json();
-    setOccupancyRoster(data);
+    setOccupancyRoster(Array.isArray(data) ? data : []);
   };
 
   const handleAddOccupancy = async (e: React.FormEvent) => {
@@ -364,8 +364,8 @@ export default function App() {
 
       const res = await fetch(`/api/history?${params.toString()}`);
       const result = await res.json();
-      setHistory(result.data);
-      setHistoryTotal(result.total);
+      setHistory(Array.isArray(result.data) ? result.data : []);
+      setHistoryTotal(result.total || 0);
     } catch (e) {
       console.error("Failed to fetch history", e);
     } finally {
