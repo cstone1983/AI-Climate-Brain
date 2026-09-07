@@ -36,7 +36,7 @@ Type=simple
 User=$APP_USER
 WorkingDirectory=$APP_DIR
 ExecStart=/usr/bin/npm run start
-Restart=on-failure
+Restart=always
 Environment=NODE_ENV=production
 Environment=PORT=3001
 
