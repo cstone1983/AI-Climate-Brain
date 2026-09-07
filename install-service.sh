@@ -66,6 +66,12 @@ server {
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
         proxy_cache_bypass \$http_upgrade;
+        # AI schedule generation (Opus, large prompts) can run well past
+        # nginx's 60s default before responding - this only affects the
+        # manual "Generate AI Schedule" button; the automated daily run
+        # calls the same function in-process and isn't proxied at all.
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 EOF
