@@ -2747,6 +2747,18 @@ app.get("/api/schedules", async (req, res) => {
   res.json(schedules);
 });
 
+app.delete("/api/schedules/:id", requireAdmin, async (req, res) => {
+  try {
+    if (pgPool && pgReady) {
+      await pgPool.query("DELETE FROM schedules WHERE id = $1", [req.params.id]);
+    }
+    db.prepare("DELETE FROM schedules WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/insights", async (req, res) => {
   if (pgPool && pgReady) {
     try {
