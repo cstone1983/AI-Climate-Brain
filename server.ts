@@ -168,6 +168,39 @@ function filterTransitions(history: any[]) {
   return transitions;
 }
 
+const VALID_SCHEDULE_DAYS = new Set(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+
+// Defense-in-depth against a bad AI run producing structurally-valid-JSON
+// garbage (confirmed live: a local-model test once produced literal "..."
+// placeholders and a date like "2023-05-01" in the "day" field, which
+// silently made it into the live schedules table with no error at all).
+// Provider quality varies, so this stays a plain code check rather than
+// trusting any model to self-police its own output.
+function isScheduleSane(schedule: any): { sane: boolean; reason?: string } {
+  if (!schedule || !Array.isArray(schedule.schedule_data)) {
+    return { sane: false, reason: "schedule_data is missing or not an array" };
+  }
+  if (schedule.schedule_data.length === 0) {
+    return { sane: false, reason: "schedule_data is empty" };
+  }
+  for (const entry of schedule.schedule_data) {
+    const textFields = [entry.day, entry.time, entry.action, entry.entity_id, entry.state];
+    if (textFields.some(f => typeof f === "string" && f.trim() === "...")) {
+      return { sane: false, reason: `entry contains a literal "..." placeholder instead of real content: ${JSON.stringify(entry)}` };
+    }
+    if (typeof entry.day !== "string" || !VALID_SCHEDULE_DAYS.has(entry.day)) {
+      return { sane: false, reason: `entry has an invalid "day" (expected a weekday name, got ${JSON.stringify(entry.day)})` };
+    }
+    if (typeof entry.time !== "string" || !/^\d{1,2}:\d{2}$/.test(entry.time)) {
+      return { sane: false, reason: `entry has an invalid "time" (expected HH:MM, got ${JSON.stringify(entry.time)})` };
+    }
+    if (typeof entry.entity_id !== "string" || !entry.entity_id.includes(".")) {
+      return { sane: false, reason: `entry has an invalid "entity_id" (got ${JSON.stringify(entry.entity_id)})` };
+    }
+  }
+  return { sane: true };
+}
+
 // Custody calendar support: the user's shared Google Calendar exports as a
 // public/secret ICS feed where every day is covered by a contiguous "Busy"
 // block in a 2-2-3 rotation (classic pattern: each block flips to the other
@@ -1395,7 +1428,7 @@ ${custodySchedule.length > 0 ? `
         }
       },
       required: ["insights", "reasoning", "schedule"]
-    }, 8192);
+    }, 16384);
 
     if (!result.schedule) {
       throw new Error("AI returned invalid JSON format or missing schedule. Please try again.");
@@ -1403,18 +1436,24 @@ ${custodySchedule.length > 0 ? `
     
     // Save analysis
     if (result.schedule && result.schedule.name) {
-      if (pgPool && pgReady) {
-        try {
-          await pgPool.query(
-            "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
-            [result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data), new Date().toISOString()]
-          );
-        } catch (e) {
-          console.error("Failed to save schedule to PostgreSQL:", e);
+      const sanityCheck = isScheduleSane(result.schedule);
+      if (!sanityCheck.sane) {
+        console.error(`Refusing to save AI-generated schedule - failed sanity check: ${sanityCheck.reason}`);
+        await sendTelegramAlert(`AI schedule generation produced invalid output and was NOT saved:\n\n${sanityCheck.reason}`);
+      } else {
+        if (pgPool && pgReady) {
+          try {
+            await pgPool.query(
+              "INSERT INTO schedules (name, description, schedule_data, created_at) VALUES ($1, $2, $3, $4)",
+              [result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data), new Date().toISOString()]
+            );
+          } catch (e) {
+            console.error("Failed to save schedule to PostgreSQL:", e);
+          }
         }
+        const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data, created_at) VALUES (?, ?, ?, datetime('now'))");
+        insertSchedule.run(result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data));
       }
-      const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data, created_at) VALUES (?, ?, ?, datetime('now'))");
-      insertSchedule.run(result.schedule.name, result.schedule.description || "", JSON.stringify(result.schedule.schedule_data));
     }
     
     if (result.insights && Array.isArray(result.insights)) {
@@ -2560,6 +2599,10 @@ app.post("/api/ai/save-analysis", async (req, res) => {
   const { insights, reasoning, schedule } = req.body;
   try {
     if (schedule && schedule.name) {
+      const sanityCheck = isScheduleSane(schedule);
+      if (!sanityCheck.sane) {
+        return res.status(400).json({ success: false, error: `Refusing to save - ${sanityCheck.reason}` });
+      }
       const insertSchedule = db.prepare("INSERT INTO schedules (name, description, schedule_data, created_at) VALUES (?, ?, ?, datetime('now'))");
       insertSchedule.run(schedule.name, schedule.description || "", JSON.stringify(schedule.schedule_data));
     }
