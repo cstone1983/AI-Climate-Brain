@@ -520,6 +520,8 @@ let haMessageId = 1;
 let haStatus = 'disconnected';
 let haError = '';
 let haReconnectTimeout: NodeJS.Timeout | null = null;
+let haHeartbeatInterval: NodeJS.Timeout | null = null;
+let haLastPongAt = 0;
 
 function setHaStatus(status: string, error = '') {
   haStatus = status;
@@ -698,11 +700,36 @@ function isLocalAddress(url: string): boolean {
          lowerUrl.includes('127.0.0.1');
 }
 
+function stopHaHeartbeat() {
+  if (haHeartbeatInterval) {
+    clearInterval(haHeartbeatInterval);
+    haHeartbeatInterval = null;
+  }
+}
+
+function startHaHeartbeat() {
+  stopHaHeartbeat();
+  haLastPongAt = Date.now();
+  haHeartbeatInterval = setInterval(() => {
+    if (!haWs || haWs.readyState !== WebSocket.OPEN) return;
+    // No traffic (including our own pings) in 45s means the connection is
+    // silently dead (e.g. a NAT/router timeout that never sends a close
+    // frame) - terminate it so the close handler reconnects.
+    if (Date.now() - haLastPongAt > 45000) {
+      console.warn('[HA] No response in 45s, connection appears dead. Forcing reconnect.');
+      haWs.terminate();
+      return;
+    }
+    haWs.send(JSON.stringify({ id: haMessageId++, type: 'ping' }));
+  }, 20000);
+}
+
 function connectToHA() {
   if (haReconnectTimeout) {
     clearTimeout(haReconnectTimeout);
     haReconnectTimeout = null;
   }
+  stopHaHeartbeat();
 
   setHaStatus('connecting');
   const settingsRows = db.prepare("SELECT * FROM settings").all() as any[];
@@ -747,6 +774,7 @@ function connectToHA() {
     haWs = new WebSocket(wsUrl);
     
     haWs.on('message', (data) => {
+      haLastPongAt = Date.now(); // any traffic proves the connection is alive
       const msg = safeParse(data.toString());
       if (msg.type === 'auth_required') {
         haWs?.send(JSON.stringify({ type: 'auth', access_token: ha_token }));
@@ -755,6 +783,7 @@ function connectToHA() {
         setHaStatus('connected');
         haWs?.send(JSON.stringify({ id: haMessageId++, type: 'subscribe_events', event_type: 'state_changed' }));
         fillHistoryGaps();
+        startHaHeartbeat();
       } else if (msg.type === 'auth_invalid') {
         setHaStatus('disconnected', 'Invalid Access Token');
         console.error('HA WS Auth Invalid');
@@ -816,12 +845,14 @@ function connectToHA() {
       if (errorMsg.includes('ENOTFOUND')) errorMsg = 'Address not found (DNS failure)';
       else if (errorMsg.includes('ECONNREFUSED')) errorMsg = 'Connection refused (Check port/firewall)';
       else if (errorMsg.includes('ETIMEDOUT')) errorMsg = 'Connection timed out';
-      
+
+      stopHaHeartbeat();
       setHaStatus('disconnected', errorMsg);
     });
 
     haWs.on('close', (code, reason) => {
       console.log(`HA WS Closed (Code: ${code}, Reason: ${reason}). Reconnecting in 5s...`);
+      stopHaHeartbeat();
       setHaStatus('disconnected', reason.toString() || `Closed with code ${code}`);
       if (!haReconnectTimeout) {
         haReconnectTimeout = setTimeout(connectToHA, 5000);
