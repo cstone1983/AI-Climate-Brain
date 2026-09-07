@@ -1150,12 +1150,14 @@ For every climate/HVAC schedule entry, populate target_temperature as (master te
       Tracked Devices (including People): ${JSON.stringify(allTracked)}
       Recent History (State Transitions Only): ${JSON.stringify(filteredHistory.slice(-1000))}
       Logbook Events (Last ${lookbackDays} Days): ${JSON.stringify(logbook.slice(-500))}
-      
+
+      REMINDER: every schedule_data entry whose entity_id starts with "climate." MUST include a numeric target_temperature field (master temp for that mode + zone offset, per CLIMATE TARGET PREFERENCES above). Do not leave it blank or omit it for climate entries - "state" alone (heat_cool/cool/eco/etc.) is not sufficient.
+
       Return a JSON object with:
       {
         "insights": ["insight 1", ...],
         "reasoning": [{ "context": "...", "decision": "...", "reasoning": "...", "evidence": "Specific data points observed..." }],
-        "schedule": { "name": "...", "description": "...", "schedule_data": [{ "day": "...", "time": "...", "action": "...", "entity_id": "...", "state": "...", "reasoning": "...", "evidence": "..." }] }
+        "schedule": { "name": "...", "description": "...", "schedule_data": [{ "day": "...", "time": "...", "action": "...", "entity_id": "...", "state": "...", "target_temperature": 72, "reasoning": "...", "evidence": "..." }] }
       }
     `;
 
