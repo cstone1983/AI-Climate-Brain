@@ -1088,8 +1088,10 @@ async function runDailyAnalysis() {
     }
 
     const now = new Date();
-    const currentTimeStr = now.toLocaleString('en-US', { timeZoneName: 'short' });
-    const currentDayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const currentTimeUTC = now.toISOString();
+    const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const currentTimeLocal = now.toLocaleString('en-US', { timeZone: serverTimeZone, timeZoneName: 'short' });
+    const currentDayOfWeek = now.toLocaleDateString('en-US', { timeZone: serverTimeZone, weekday: 'long' });
 
     // Live weather/climate readings, fetched fresh right now - the
     // ha_system_snapshots row used for SYSTEM SNAPSHOT below is only
@@ -1142,7 +1144,8 @@ For every climate/HVAC schedule entry, populate target_temperature as (master te
       USER PROVIDED CONTEXT:
       ${userContext}
 
-      CURRENT DATE/TIME: ${currentTimeStr} (${currentDayOfWeek}) - use this to anchor which day the schedule starts from and how recent the history below actually is.
+      CURRENT DATE/TIME: ${currentTimeLocal} (${currentDayOfWeek}) - use this to anchor which day the schedule starts from and how recent the history below actually is.
+      TIMEZONE NOTE: all timestamps in "Recent History" and "Logbook Events" below are stored in UTC (currently ${currentTimeUTC}), NOT the server's local time shown above. When you produce schedule times ("time" field) or reason about clock times in your output, convert to and express them in the server's local time zone (${serverTimeZone}), since that's the household's real wall-clock time - do not output raw UTC hours as if they were local.
       CURRENT CONDITIONS (live weather/climate, fetched just now): ${JSON.stringify(currentConditions)}
 
       SYSTEM SNAPSHOT (Full Entity List & Config, may be from an earlier manual sync): ${JSON.stringify(systemSnapshot)}
@@ -1280,7 +1283,7 @@ function scheduleDailyAnalysis() {
   if (next <= now) next.setDate(next.getDate() + 1);
 
   const delayMs = next.getTime() - now.getTime();
-  console.log(`Next daily analysis scheduled for ${next.toLocaleString()} (in ${Math.round(delayMs / 60000)} minutes).`);
+  console.log(`Next daily analysis scheduled for ${next.toLocaleString()} ${Intl.DateTimeFormat().resolvedOptions().timeZone} (in ${Math.round(delayMs / 60000)} minutes). If this timezone doesn't match your household's actual local time, the "Daily Schedule Generation Hour" setting will fire at the wrong wall-clock time - set the server's TZ environment variable (or system timezone) to match.`);
 
   dailyAnalysisTimeoutId = setTimeout(async () => {
     try {
@@ -1423,7 +1426,8 @@ async function executeRealTimeAIControl() {
       USER PROVIDED CONTEXT:
       ${userContext}
 
-      CURRENT DATE/TIME: ${new Date().toLocaleString('en-US', { timeZoneName: 'short' })} (${new Date().toLocaleDateString('en-US', { weekday: 'long' })})
+      CURRENT DATE/TIME: ${new Date().toLocaleString('en-US', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, timeZoneName: 'short' })} (${new Date().toLocaleDateString('en-US', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, weekday: 'long' })})
+      TIMEZONE NOTE: "RECENT HISTORY" and "RECENT LOGBOOK" timestamps below are stored in UTC, not local time. Convert to the server's local time zone when reasoning about or outputting clock times.
       SYSTEM SNAPSHOT: ${JSON.stringify(systemSnapshot)}
       USER AUTOMATIONS & SCRIPTS (For Learning Patterns): ${JSON.stringify(automationsScripts)}
       OCCUPANCY STATUS (People): ${JSON.stringify(occupancyRoster)}
