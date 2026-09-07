@@ -161,6 +161,16 @@ export default function App() {
     historyFiltersRef.current = historyFilters;
   }, [historyFilters]);
 
+  const dashboardGraphZonesRef = useRef(settings.dashboard_graph_zones);
+  useEffect(() => {
+    dashboardGraphZonesRef.current = settings.dashboard_graph_zones;
+  }, [settings.dashboard_graph_zones]);
+
+  const graphTimeframeRef = useRef(graphTimeframe);
+  useEffect(() => {
+    graphTimeframeRef.current = graphTimeframe;
+  }, [graphTimeframe]);
+
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -209,8 +219,9 @@ export default function App() {
           }
           
           // If the new history event is for a graphed zone, refresh the graph data
-          if (settings.dashboard_graph_zones && settings.dashboard_graph_zones.includes(message.data.entity_id)) {
-            fetchGraphData(settings.dashboard_graph_zones, graphTimeframe);
+          const graphZones = dashboardGraphZonesRef.current;
+          if (graphZones && graphZones.includes(message.data.entity_id)) {
+            fetchGraphData(graphZones, graphTimeframeRef.current);
           }
         } else if (message.type === 'NEW_REASONING') {
           fetchReasoning();
@@ -236,7 +247,7 @@ export default function App() {
       
       return () => ws.close();
     }
-  }, [currentUser, settings.dashboard_graph_zones]);
+  }, [currentUser]);
 
   useEffect(() => {
     if (settings.dashboard_graph_zones) {
