@@ -1196,11 +1196,11 @@ For every climate/HVAC schedule entry, populate target_temperature as (master te
                   action: { type: "string", description: "Friendly description of the action (e.g., Turn on kitchen lights)" },
                   entity_id: { type: "string" },
                   state: { type: "string", description: "For climate entities this is ONLY the bare HVAC mode word: 'heat_cool', 'cool', 'heat', 'eco', 'idle', or 'off'. Correct: \"cool\". WRONG - never do this: \"cool_72\", \"cool-72F\", \"away_setback_65\". The temperature always goes in the separate target_temperature field below, never appended to or combined with state. For lights/switches, use on/off." },
-                  target_temperature: { type: "number", description: "MANDATORY whenever entity_id starts with 'climate.'. A bare number in °F (e.g. 72), computed as master temp for that mode + that zone's offset from CLIMATE TARGET PREFERENCES. This field must never be null/omitted for a climate entity - that is a validation failure. Omit only for non-climate entity_id values (lights, switches, sensors, etc.)." },
+                  target_temperature: { type: ["number", "null"], description: "This key must always be present. If entity_id starts with 'climate.', set it to a bare number in °F (e.g. 72), computed as master temp for that mode + that zone's offset from CLIMATE TARGET PREFERENCES. If entity_id does NOT start with 'climate.' (lights, switches, sensors, people, etc.), set it to null." },
                   reasoning: { type: "string", description: "Specific reasoning for this individual event" },
                   evidence: { type: "string", description: "The specific data point (e.g. motion sensor trigger time) that led to this schedule entry" }
                 },
-                required: ["day", "time", "action", "entity_id", "state", "evidence"]
+                required: ["day", "time", "action", "entity_id", "state", "target_temperature", "evidence"]
               }
             }
           },
