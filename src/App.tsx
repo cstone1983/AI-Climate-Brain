@@ -553,12 +553,18 @@ export default function App() {
     setLoginForm({ username: '', password: '' });
   };
 
-  const handleSaveSettings = async (e: React.FormEvent) => {
+  // Each settings form saves only its own fields - NOT the whole settings
+  // object - so saving e.g. Climate Guardrails can't accidentally re-submit
+  // (and thus re-trigger side effects for, like an HA reconnect) fields
+  // owned by a completely different form.
+  const createSaveHandler = (keys: string[]) => async (e: React.FormEvent) => {
     e.preventDefault();
+    const payload: Record<string, any> = {};
+    keys.forEach(k => { payload[k] = (settings as any)[k]; });
     await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings)
+      body: JSON.stringify(payload)
     });
     alert('Settings saved');
   };
@@ -1687,7 +1693,7 @@ export default function App() {
                       <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['ai_model', 'ai_realtime_interval', 'ai_lookback_days', 'ai_context_window_hours', 'ai_daily_analysis_hour'])} className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <Label htmlFor="ai_model">Claude Model Selection</Label>
@@ -1769,7 +1775,7 @@ export default function App() {
                       <CardDescription>Safety limits for AI-driven temperature adjustments.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['climate_abs_min', 'climate_abs_max'])} className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <Label htmlFor="climate_abs_min">Absolute Minimum Temperature (°F)</Label>
@@ -2252,7 +2258,7 @@ export default function App() {
                       <CardDescription>Configure your Anthropic Claude API key for AI features.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['claude_api_key'])} className="space-y-4">
                         <div className="grid grid-cols-1 gap-4">
                           <div className="space-y-2">
                             <Label htmlFor="claude_api_key">API Key</Label>
@@ -2282,7 +2288,7 @@ export default function App() {
                     <CardDescription>Configure your connection to Home Assistant.</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <form onSubmit={handleSaveSettings} className="space-y-4">
+                    <form onSubmit={createSaveHandler(['ha_url', 'ha_token'])} className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label htmlFor="ha_url">Home Assistant URL</Label>
@@ -2342,7 +2348,7 @@ export default function App() {
                       <CardDescription>Configure Telegram for alerts and notifications.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={handleSaveSettings} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['telegram_bot_token', 'telegram_chat_id'])} className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <Label htmlFor="telegram_bot_token">Bot Token</Label>
