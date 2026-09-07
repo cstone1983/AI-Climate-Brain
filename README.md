@@ -67,6 +67,28 @@ If you want to run the app locally for development:
    ```
 3. The app will be available at `http://localhost:3000`.
 
+## Future Ideas / Roadmap
+
+Not started - notes for later, roughly in order of what's been discussed:
+
+- **Local LLM option for routine checks.** Run the daily analysis and/or
+  real-time control loop against a local model (e.g. via Ollama/LM Studio)
+  running on a home machine instead of the Claude API, to cut or eliminate
+  API costs for the more frequent checks. Would need a pluggable AI-provider
+  layer alongside the existing `callClaudeJson` helper in `server.ts`.
+- **Additional context sources beyond Home Assistant.** e.g. syncing a kids'
+  school calendar so the AI can factor in known schedule exceptions
+  (early dismissal, school holidays) instead of only inferring patterns
+  from device/presence history. Would likely plug into the same
+  `user_ai_context` mechanism already used for manual AI notes, or a
+  dedicated sync job similar to the existing automation/script sync.
+- **Season-over-season comparison.** `device_history`/`logbook_history`
+  already retain data indefinitely (no pruning), so the raw data for this
+  already exists - the AI just doesn't use it yet. The daily/real-time
+  prompts only ever pull a rolling recent window (`ai_lookback_days`).
+  Would need a deliberate "same time last year" query added to the daily
+  analysis prompt.
+
 ## Troubleshooting
 
 - **Check App Logs:** If the app isn't starting, you can view the background service logs using:

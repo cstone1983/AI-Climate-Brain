@@ -83,11 +83,13 @@ export default function App() {
     telegram_chat_id: '',
     user_ai_context: '',
     dashboard_graph_zones: '[]',
+    ai_realtime_enabled: 'false',
     ai_realtime_interval: '5',
     ai_lookback_days: '60',
     ai_context_window_hours: '2',
     ai_daily_analysis_hour: '3',
     ai_model: 'claude-sonnet-5',
+    ai_model_realtime: 'claude-haiku-4-5-20251001',
     climate_abs_min: '55',
     climate_abs_max: '80',
     dashboard_default_timeframe: '24h',
@@ -1693,10 +1695,25 @@ export default function App() {
                       <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={createSaveHandler(['ai_model', 'ai_realtime_interval', 'ai_lookback_days', 'ai_context_window_hours', 'ai_daily_analysis_hour'])} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['ai_model', 'ai_model_realtime', 'ai_realtime_interval', 'ai_lookback_days', 'ai_context_window_hours', 'ai_daily_analysis_hour'])} className="space-y-4">
+                        <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
+                          <div>
+                            <h4 className="font-medium text-slate-900">Real-Time AI Control Loop</h4>
+                            <p className="text-sm text-slate-500">Off by default to limit API usage - the once-daily schedule analysis below still runs regardless. Turn this on for the AI to also react to changes throughout the day.</p>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+                            <input
+                              type="checkbox"
+                              className="sr-only peer"
+                              checked={settings.ai_realtime_enabled === 'true'}
+                              onChange={(e) => handleUpdateSingleSetting('ai_realtime_enabled', e.target.checked ? 'true' : 'false')}
+                            />
+                            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                          </label>
+                        </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="space-y-2">
-                            <Label htmlFor="ai_model">Claude Model Selection</Label>
+                            <Label htmlFor="ai_model">Daily Analysis Model</Label>
                             <select
                               id="ai_model"
                               className="w-full p-2 border border-slate-200 rounded-md text-sm"
@@ -1707,6 +1724,21 @@ export default function App() {
                               <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
                               <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
                             </select>
+                            <p className="text-[10px] text-slate-400">Runs once a day - fine to use a more capable (pricier) model here.</p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ai_model_realtime">Real-Time Model</Label>
+                            <select
+                              id="ai_model_realtime"
+                              className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                              value={settings.ai_model_realtime}
+                              onChange={e => setSettings({...settings, ai_model_realtime: e.target.value})}
+                            >
+                              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
+                              <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
+                              <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
+                            </select>
+                            <p className="text-[10px] text-slate-400">Only used if the real-time loop above is enabled - runs far more often, so cheaper is recommended.</p>
                           </div>
                           <div className="space-y-2">
                             <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>

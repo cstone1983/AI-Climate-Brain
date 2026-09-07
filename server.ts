@@ -478,6 +478,8 @@ function initializeDatabase() {
   insertSetting.run("ai_context_window_hours", "2");
   insertSetting.run("ai_daily_analysis_hour", "3");
   insertSetting.run("ai_model", "claude-sonnet-5");
+  insertSetting.run("ai_model_realtime", "claude-haiku-4-5-20251001");
+  insertSetting.run("ai_realtime_enabled", "false");
   insertSetting.run("climate_abs_min", "55");
   insertSetting.run("climate_abs_max", "80");
   insertSetting.run("dashboard_default_timeframe", "24h");
@@ -1263,9 +1265,16 @@ function scheduleDailyAnalysis() {
 scheduleDailyAnalysis();
 
 // --- Real-time AI Control Loop ---
+// Uses a separate (cheaper/faster) model setting from the daily deep
+// analysis, since this runs far more often - and skips the AI call
+// entirely when nothing relevant has changed since the last check, since
+// there is nothing new for it to react to.
+let lastRealTimeCheckAt = new Date().toISOString();
+
 async function executeRealTimeAIControl() {
+  const checkStartedAt = new Date().toISOString();
   try {
-    const aiModel = getSetting("ai_model", "claude-sonnet-5");
+    const aiModel = getSetting("ai_model_realtime", "claude-haiku-4-5-20251001");
     const contextWindowHours = Number(getSetting("ai_context_window_hours", "2"));
     const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
 
@@ -1306,9 +1315,24 @@ async function executeRealTimeAIControl() {
     const trackedStates = states.filter((s: any) => {
       // Task 2: Include media_player, light, and binary_sensor (motion)
       const domain = s.entity_id.split('.')[0];
-      return trackedIds.includes(s.entity_id) || 
+      return trackedIds.includes(s.entity_id) ||
              ['media_player', 'light', 'binary_sensor'].includes(domain);
     }) || [];
+
+    // Skip the (paid) AI call entirely if nothing relevant has changed
+    // since the last check - there's nothing new for it to react to.
+    const relevantPlaceholders = trackedIds.map(() => '?').join(',');
+    const activitySinceLastCheck = db.prepare(`
+      SELECT id FROM device_history
+      WHERE last_changed >= ?
+      AND (${trackedIds.length > 0 ? `entity_id IN (${relevantPlaceholders}) OR ` : ''}entity_id LIKE 'media_player.%' OR entity_id LIKE 'light.%' OR entity_id LIKE 'binary_sensor.%')
+      LIMIT 1
+    `).get(lastRealTimeCheckAt, ...trackedIds);
+
+    if (!activitySinceLastCheck) {
+      lastRealTimeCheckAt = checkStartedAt;
+      return;
+    }
 
     const placeholders = trackedIds.map(() => '?').join(',');
     const recentHistory = trackedIds.length > 0 ? db.prepare(`
@@ -1408,6 +1432,8 @@ async function executeRealTimeAIControl() {
       required: ["inferred_home_state", "confidence_score", "actions"]
     });
 
+    lastRealTimeCheckAt = checkStartedAt;
+
     // Task 4: Fail-Safe Defaults
     if (result.confidence_score === undefined || result.confidence_score === null) {
       console.warn("AI returned missing or null confidence_score. Ignoring actions.");
@@ -1494,6 +1520,13 @@ let realTimeIntervalId: NodeJS.Timeout | null = null;
 
 function startRealTimeAIControl() {
   if (realTimeIntervalId) clearInterval(realTimeIntervalId);
+  realTimeIntervalId = null;
+
+  if (getSetting("ai_realtime_enabled", "false") !== "true") {
+    console.log("Real-time AI control loop is disabled. Relying on the once-daily schedule analysis only.");
+    return;
+  }
+
   const intervalMins = Number(getSetting("ai_realtime_interval", "5"));
   const intervalMs = Math.max(1, intervalMins) * 60 * 1000;
   console.log(`Starting real-time AI control loop with ${intervalMins} minute interval.`);
@@ -1747,8 +1780,8 @@ app.post("/api/settings", async (req, res) => {
     connectToHA();
   }
 
-  // Restart real-time loop if interval changed
-  if (updates.ai_realtime_interval !== undefined) {
+  // Restart real-time loop if interval or enabled flag changed
+  if (updates.ai_realtime_interval !== undefined || updates.ai_realtime_enabled !== undefined) {
     startRealTimeAIControl();
   }
 
