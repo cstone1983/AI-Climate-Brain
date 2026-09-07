@@ -68,6 +68,75 @@ async function callClaudeJson(apiKey: string, model: string, prompt: string, sch
   return toolUse.input;
 }
 
+// Calls a local Ollama instance directly (not through Open WebUI's proxy -
+// its OpenAI-compatible endpoint enforces browser-only fetch metadata that
+// server-side clients can't satisfy, confirmed by testing against a real
+// instance) using Ollama's native structured-output support: `format` takes
+// the actual JSON schema and constrains decoding to match it, which is more
+// reliable than embedding the schema in the prompt and hoping. Ollama has no
+// built-in auth, so apiKey is only sent if the user's setup happens to sit
+// behind a reverse proxy that requires one.
+async function callLocalAiJson(baseUrl: string, apiKey: string, model: string, prompt: string, schema: any, maxTokens: number = 4096): Promise<any> {
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
+      format: schema,
+      options: { num_predict: maxTokens }
+    })
+  });
+
+  if (!res.ok) {
+    throw new Error(`Local AI request failed: ${res.status} ${res.statusText} - ${await res.text().catch(() => "")}`);
+  }
+
+  const data = await res.json();
+  let content = data?.message?.content;
+  if (!content) throw new Error("Local AI did not return any content.");
+
+  // Defensive unwrap even though `format` should already constrain this:
+  // reasoning models (e.g. deepseek-r1) can still prefix a <think> trace.
+  content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  content = content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    throw new Error(`Local AI returned invalid JSON: ${(e as Error).message}`);
+  }
+}
+
+// Picks the configured AI provider (Claude, or a local OpenAI-compatible
+// endpoint) and returns a ready-to-call function plus a reason to skip if
+// the chosen provider isn't configured yet - callers use this instead of
+// duplicating the same "is a key/URL set" check three times.
+function resolveAiProvider(modelSettingKey: string, defaultModel: string): { ready: boolean; skipReason: string; call: (prompt: string, schema: any, maxTokens?: number) => Promise<any> } {
+  const provider = getSetting("ai_provider", "claude");
+
+  if (provider === "local") {
+    const baseUrl = getSetting("local_ai_base_url", "");
+    const localApiKey = getSetting("local_ai_api_key", "");
+    const localModel = getSetting("local_ai_model", "hermes3:latest");
+    if (!baseUrl) {
+      return { ready: false, skipReason: "Local AI base URL is not configured in settings.", call: async () => { throw new Error("Local AI is not configured."); } };
+    }
+    return { ready: true, skipReason: "", call: (prompt, schema, maxTokens) => callLocalAiJson(baseUrl, localApiKey, localModel, prompt, schema, maxTokens) };
+  }
+
+  const model = getSetting(modelSettingKey, defaultModel);
+  const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
+  if (!apiKey || apiKey === "undefined" || apiKey === "null") {
+    return { ready: false, skipReason: "Claude API Key is not configured in settings.", call: async () => { throw new Error("Claude is not configured."); } };
+  }
+  return { ready: true, skipReason: "", call: (prompt, schema, maxTokens) => callClaudeJson(apiKey, model, prompt, schema, maxTokens) };
+}
+
 // Fallback entities shown when Home Assistant is unreachable, so the UI has
 // something to render instead of an empty screen. Shared by every route that
 // needs to degrade gracefully when fetchHA() returns nothing.
@@ -480,6 +549,10 @@ function initializeDatabase() {
   insertSetting.run("ai_model", "claude-sonnet-5");
   insertSetting.run("ai_model_realtime", "claude-haiku-4-5-20251001");
   insertSetting.run("ai_realtime_enabled", "false");
+  insertSetting.run("ai_provider", "claude");
+  insertSetting.run("local_ai_base_url", "");
+  insertSetting.run("local_ai_api_key", "");
+  insertSetting.run("local_ai_model", "hermes3:latest");
   insertSetting.run("climate_abs_min", "55");
   insertSetting.run("climate_abs_max", "80");
   insertSetting.run("dashboard_default_timeframe", "24h");
@@ -980,9 +1053,7 @@ async function sendTelegramAlert(message: string) {
 // --- Daily AI Analysis ---
 async function runDailyAnalysis() {
   try {
-    const aiModel = getSetting("ai_model", "claude-sonnet-5");
     const lookbackDays = Number(getSetting("ai_lookback_days", "60"));
-    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
     const climateAbsMin = getSetting("climate_abs_min", "55");
     const climateAbsMax = getSetting("climate_abs_max", "80");
     const climateMasterHome = getSetting("climate_master_home", "72");
@@ -990,8 +1061,9 @@ async function runDailyAnalysis() {
     const climateMasterNight = getSetting("climate_master_night", "68");
     const climateZoneModifiers = safeParse(getSetting("climate_zone_modifiers", "{}"), {});
 
-    if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      console.warn("Claude API Key is not configured in settings. Skipping daily analysis.");
+    const ai = resolveAiProvider("ai_model", "claude-sonnet-5");
+    if (!ai.ready) {
+      console.warn(`${ai.skipReason} Skipping daily analysis.`);
       return {};
     }
 
@@ -1164,7 +1236,7 @@ For every climate/HVAC schedule entry, populate target_temperature as (master te
       }
     `;
 
-    const result = await callClaudeJson(apiKey, aiModel, prompt, {
+    const result = await ai.call(prompt, {
       type: "object",
       properties: {
         insights: {
@@ -1307,12 +1379,11 @@ let lastRealTimeCheckAt = new Date().toISOString();
 async function executeRealTimeAIControl() {
   const checkStartedAt = new Date().toISOString();
   try {
-    const aiModel = getSetting("ai_model_realtime", "claude-haiku-4-5-20251001");
     const contextWindowHours = Number(getSetting("ai_context_window_hours", "2"));
-    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
 
-    if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      console.warn("Claude API Key is not configured in settings. Skipping real-time control.");
+    const ai = resolveAiProvider("ai_model_realtime", "claude-haiku-4-5-20251001");
+    if (!ai.ready) {
+      console.warn(`${ai.skipReason} Skipping real-time control.`);
       return;
     }
 
@@ -1444,7 +1515,7 @@ async function executeRealTimeAIControl() {
       }
     `;
 
-    const result = await callClaudeJson(apiKey, aiModel, prompt, {
+    const result = await ai.call(prompt, {
       type: "object",
       properties: {
         inferred_home_state: {
@@ -2698,9 +2769,9 @@ app.get("/api/reasoning", async (req, res) => {
 
 app.post("/api/ai/scan-entities", async (req, res) => {
   try {
-    const apiKey = getSetting("claude_api_key", process.env.ANTHROPIC_API_KEY || "");
-    if (!apiKey || apiKey === "undefined" || apiKey === "null") {
-      throw new Error("Claude API Key is not configured in settings.");
+    const ai = resolveAiProvider("ai_model", "claude-sonnet-5");
+    if (!ai.ready) {
+      throw new Error(ai.skipReason);
     }
 
     let states = await fetchHA('/api/states');
@@ -2714,8 +2785,7 @@ app.post("/api/ai/scan-entities", async (req, res) => {
       domain: e.entity_id.split('.')[0]
     }));
 
-    const aiModel = getSetting("ai_model", "claude-sonnet-5");
-    const result = await callClaudeJson(apiKey, aiModel, `Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system.
+    const result = await ai.call(`Analyze these Home Assistant entities and identify which ones are critical for an AI-driven climate control and home automation system.
       Focus on:
       1. Climate/Thermostat entities.
       2. Temperature/Humidity sensors.

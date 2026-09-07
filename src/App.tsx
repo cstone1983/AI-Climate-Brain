@@ -90,6 +90,10 @@ export default function App() {
     ai_daily_analysis_hour: '3',
     ai_model: 'claude-sonnet-5',
     ai_model_realtime: 'claude-haiku-4-5-20251001',
+    ai_provider: 'claude',
+    local_ai_base_url: '',
+    local_ai_api_key: '',
+    local_ai_model: 'hermes3:latest',
     climate_abs_min: '55',
     climate_abs_max: '80',
     dashboard_default_timeframe: '24h',
@@ -1706,7 +1710,52 @@ export default function App() {
                       <CardDescription>Adjust how the AI analyzes your home and how often it makes decisions.</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <form onSubmit={createSaveHandler(['ai_model', 'ai_model_realtime', 'ai_realtime_interval', 'ai_lookback_days', 'ai_context_window_hours', 'ai_daily_analysis_hour'])} className="space-y-4">
+                      <form onSubmit={createSaveHandler(['ai_provider', 'local_ai_base_url', 'local_ai_api_key', 'local_ai_model', 'ai_model', 'ai_model_realtime', 'ai_realtime_interval', 'ai_lookback_days', 'ai_context_window_hours', 'ai_daily_analysis_hour'])} className="space-y-4">
+                        <div className="space-y-2 p-4 bg-slate-50 border border-slate-100 rounded-lg">
+                          <Label htmlFor="ai_provider">AI Provider</Label>
+                          <select
+                            id="ai_provider"
+                            className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                            value={settings.ai_provider}
+                            onChange={e => setSettings({...settings, ai_provider: e.target.value})}
+                          >
+                            <option value="claude">Claude (Anthropic API)</option>
+                            <option value="local">Local Model (self-hosted Ollama)</option>
+                          </select>
+                          <p className="text-[10px] text-slate-400">Points directly at Ollama's native API (not a UI proxy like Open WebUI - those add browser-only auth checks that server-to-server requests can't satisfy). Skips API costs entirely, but needs a reachable, always-on Ollama instance and will generally follow structured-output instructions less reliably than Claude.</p>
+                          {settings.ai_provider === 'local' && (
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                              <div className="space-y-2">
+                                <Label htmlFor="local_ai_base_url">Ollama Base URL</Label>
+                                <Input
+                                  id="local_ai_base_url"
+                                  placeholder="http://10.10.1.20:11434"
+                                  value={settings.local_ai_base_url}
+                                  onChange={e => setSettings({...settings, local_ai_base_url: e.target.value})}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="local_ai_api_key">API Key (optional)</Label>
+                                <Input
+                                  id="local_ai_api_key"
+                                  type="password"
+                                  placeholder="Only needed if proxied behind auth"
+                                  value={settings.local_ai_api_key}
+                                  onChange={e => setSettings({...settings, local_ai_api_key: e.target.value})}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="local_ai_model">Local Model Name</Label>
+                                <Input
+                                  id="local_ai_model"
+                                  placeholder="hermes3:latest"
+                                  value={settings.local_ai_model}
+                                  onChange={e => setSettings({...settings, local_ai_model: e.target.value})}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
                         <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
                           <div>
                             <h4 className="font-medium text-slate-900">Real-Time AI Control Loop</h4>
@@ -1723,34 +1772,38 @@ export default function App() {
                           </label>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="ai_model">Daily Analysis Model</Label>
-                            <select
-                              id="ai_model"
-                              className="w-full p-2 border border-slate-200 rounded-md text-sm"
-                              value={settings.ai_model}
-                              onChange={e => setSettings({...settings, ai_model: e.target.value})}
-                            >
-                              <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
-                              <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
-                              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
-                            </select>
-                            <p className="text-[10px] text-slate-400">Runs once a day - fine to use a more capable (pricier) model here.</p>
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="ai_model_realtime">Real-Time Model</Label>
-                            <select
-                              id="ai_model_realtime"
-                              className="w-full p-2 border border-slate-200 rounded-md text-sm"
-                              value={settings.ai_model_realtime}
-                              onChange={e => setSettings({...settings, ai_model_realtime: e.target.value})}
-                            >
-                              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
-                              <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
-                              <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
-                            </select>
-                            <p className="text-[10px] text-slate-400">Only used if the real-time loop above is enabled - runs far more often, so cheaper is recommended.</p>
-                          </div>
+                          {settings.ai_provider === 'claude' && (
+                            <>
+                              <div className="space-y-2">
+                                <Label htmlFor="ai_model">Daily Analysis Model</Label>
+                                <select
+                                  id="ai_model"
+                                  className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                                  value={settings.ai_model}
+                                  onChange={e => setSettings({...settings, ai_model: e.target.value})}
+                                >
+                                  <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
+                                  <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
+                                  <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
+                                </select>
+                                <p className="text-[10px] text-slate-400">Runs once a day - fine to use a more capable (pricier) model here.</p>
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="ai_model_realtime">Real-Time Model</Label>
+                                <select
+                                  id="ai_model_realtime"
+                                  className="w-full p-2 border border-slate-200 rounded-md text-sm"
+                                  value={settings.ai_model_realtime}
+                                  onChange={e => setSettings({...settings, ai_model_realtime: e.target.value})}
+                                >
+                                  <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast & Efficient)</option>
+                                  <option value="claude-sonnet-5">Claude Sonnet 5 (Balanced)</option>
+                                  <option value="claude-opus-5">Claude Opus 5 (Most Capable)</option>
+                                </select>
+                                <p className="text-[10px] text-slate-400">Only used if the real-time loop above is enabled - runs far more often, so cheaper is recommended.</p>
+                              </div>
+                            </>
+                          )}
                           <div className="space-y-2">
                             <Label htmlFor="ai_realtime_interval">Real-Time Interval (Minutes: 1-60)</Label>
                             <div className="flex items-center gap-4">
