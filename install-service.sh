@@ -38,7 +38,7 @@ WorkingDirectory=$APP_DIR
 ExecStart=/usr/bin/npm run start
 Restart=on-failure
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3001
 
 [Install]
 WantedBy=multi-user.target
@@ -60,7 +60,7 @@ server {
     server_name _;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
